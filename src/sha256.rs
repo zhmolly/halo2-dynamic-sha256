@@ -58,6 +58,7 @@ impl<F: FieldExt> Sha256Chip<F> {
 
     pub fn configure(meta: &mut ConstraintSystem<F>, max_byte_size: usize) -> Sha256Config {
         let main_gate_config = MainGate::configure(meta);
+
         let composition_bit_lens = vec![
             8 / Self::NUM_LOOKUP_TABLES,
             32 / Self::NUM_LOOKUP_TABLES,
@@ -412,6 +413,107 @@ impl<F: FieldExt> Sha256Chip<F> {
             },
         )?;
 
+        let assigned_indexes = layouter.assign_region(
+            || "digest:assigned_indexes",
+            |region| {
+                let ctx = &mut RegionCtx::new(region, 0);
+                (0..max_byte_size)
+                    .into_iter()
+                    .map(|idx| main_gate.assign_constant(ctx, F::from_u128(idx as u128)))
+                    .collect::<Result<Vec<AssignedValue<F>>, Error>>()
+            },
+        )?;
+        layouter.assign_region(
+            || "digest:assert_padding",
+            |region| {
+                let ctx = &mut RegionCtx::new(region, 0);
+                let zero_padding_start =
+                    main_gate.add_constant(ctx, &assigned_inpu_byte_size, F::one())?;
+                let zero_padding_end =
+                    main_gate.add(ctx, &zero_padding_start, &assigned_zero_padding_byte_size)?;
+                let len_padding_start = zero_padding_end.clone();
+                let len_padding_end =
+                    main_gate.add_constant(ctx, &len_padding_start, F::from_u128(8u128))?;
+                let one_padding = main_gate.assign_constant(ctx, F::from_u128(0x80u128))?;
+                let two = main_gate.assign_constant(ctx, F::from_u128(2u128))?;
+                let two_inv = main_gate.invert_unsafe(ctx, &two)?;
+                let mut two_pow = main_gate.assign_constant(ctx, F::from_u128(1u128 << 8))?;
+                let mut decomposed_len_acc = main_gate.assign_constant(ctx, F::zero())?;
+
+                for i in 0..max_byte_size {
+                    let is_real =
+                        self.is_less_than_u64(ctx, &assigned_indexes[i], &assigned_inpu_byte_size)?;
+                    let is_padding_one = {
+                        let is_valid_len = main_gate.is_equal(
+                            ctx,
+                            &assigned_indexes[i],
+                            &assigned_inpu_byte_size,
+                        )?;
+                        let is_valid_input =
+                            main_gate.is_equal(ctx, &assigned_padded_inputs[i], &one_padding)?;
+                        main_gate.and(ctx, &is_valid_len, &is_valid_input)?
+                    };
+                    let is_zero_padding = {
+                        let is_greater_than_or_eq = self.is_greater_than_or_equal_u64(
+                            ctx,
+                            &assigned_indexes[i],
+                            &zero_padding_start,
+                        )?;
+                        let is_less =
+                            self.is_less_than_u64(ctx, &assigned_indexes[i], &zero_padding_end)?;
+                        let is_valid_len = main_gate.and(ctx, &is_greater_than_or_eq, &is_less)?;
+                        let is_valid_input = main_gate.is_zero(ctx, &assigned_padded_inputs[i])?;
+                        main_gate.and(ctx, &is_valid_len, &is_valid_input)?
+                    };
+                    let is_len_padding = {
+                        let is_greater_than_or_eq = self.is_greater_than_or_equal_u64(
+                            ctx,
+                            &assigned_indexes[i],
+                            &len_padding_start,
+                        )?;
+                        let is_less =
+                            self.is_less_than_u64(ctx, &assigned_indexes[i], &len_padding_end)?;
+                        let is_valid_len = main_gate.and(ctx, &is_greater_than_or_eq, &is_less)?;
+                        is_valid_len
+                    };
+                    two_pow = {
+                        let dived = main_gate.mul(ctx, &two_pow, &two_inv)?;
+                        main_gate.select(ctx, &dived, &two_pow, &is_len_padding)?
+                    };
+                    decomposed_len_acc = {
+                        let term = main_gate.mul(ctx, &assigned_padded_inputs[i], &two_pow)?;
+                        let added = main_gate.add(ctx, &decomposed_len_acc, &term)?;
+                        main_gate.select(ctx, &added, &decomposed_len_acc, &is_len_padding)?
+                    };
+                    let is_remaining = {
+                        let is_valid_len = self.is_greater_than_or_equal_u64(
+                            ctx,
+                            &assigned_indexes[i],
+                            &len_padding_end,
+                        )?;
+                        let is_valid_input = main_gate.is_zero(ctx, &assigned_padded_inputs[i])?;
+                        main_gate.and(ctx, &is_valid_len, &is_valid_input)?
+                    };
+                    let sel_sum = {
+                        let add = main_gate.add(ctx, &is_real, &is_padding_one)?;
+                        let add = main_gate.add(ctx, &add, &is_zero_padding)?;
+                        let add = main_gate.add(ctx, &add, &is_len_padding)?;
+                        let add = main_gate.add(ctx, &add, &is_remaining)?;
+                        add
+                    };
+                    main_gate.assert_one(ctx, &sel_sum)?;
+                }
+
+                main_gate.assert_one(ctx, &two_pow)?;
+                let eight = main_gate.assign_constant(ctx, F::from_u128(8u128))?;
+                let assigned_inpu_bits_size =
+                    main_gate.mul(ctx, &assigned_inpu_byte_size, &eight)?;
+                main_gate.assert_equal(ctx, &assigned_inpu_bits_size, &decomposed_len_acc)?;
+
+                Ok(())
+            },
+        )?;
+
         for (i, input_block) in padded_inputs.chunks((32 / 8) * BLOCK_SIZE).enumerate() {
             let blockword_inputs = input_block
                 .chunks(32 / 8)
@@ -640,6 +742,39 @@ impl<F: FieldExt> Sha256Chip<F> {
         ctx.constrain_equal(hi.cell(), assigned_hi.cell())?;
 
         main_gate.mul_add(ctx, &assigned_hi, &u16, &assigned_lo)
+    }
+
+    fn is_less_than_u64(
+        &self,
+        ctx: &mut RegionCtx<F>,
+        a: &AssignedValue<F>,
+        b: &AssignedValue<F>,
+    ) -> Result<AssignedValue<F>, Error> {
+        let main_gate = self.main_gate();
+        let inflated_a = main_gate.add_constant(ctx, a, F::from_u128(1 << 64))?;
+        //println!("inflated_a {:?}", inflated_a.value());
+        //println!("b {:?}", b.value());
+        let sub = main_gate.sub(ctx, &inflated_a, b)?;
+        //println!("sub {:?}", sub.value());
+        let sub_bits = main_gate.to_bits(ctx, &sub, 65)?;
+        let is_overflow = main_gate.is_zero(ctx, &sub_bits[64])?;
+        //println!("is_overflow {:?}", is_overflow.value());
+        let is_eq = main_gate.is_equal(ctx, a, b)?;
+        let is_not_eq = main_gate.not(ctx, &is_eq)?;
+        //println!("is_not_eq {:?}", is_not_eq.value());
+        let is_less = main_gate.and(ctx, &is_overflow, &is_not_eq)?;
+        //println!("is_less {:?}", is_less.value());
+        Ok(is_less)
+    }
+
+    fn is_greater_than_or_equal_u64(
+        &self,
+        ctx: &mut RegionCtx<F>,
+        a: &AssignedValue<F>,
+        b: &AssignedValue<F>,
+    ) -> Result<AssignedValue<F>, Error> {
+        let is_less = self.is_less_than_u64(ctx, a, b)?;
+        self.main_gate().not(ctx, &is_less)
     }
 }
 

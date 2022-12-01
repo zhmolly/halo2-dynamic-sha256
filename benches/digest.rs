@@ -15,7 +15,7 @@ use std::{
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use halo2_sha256::{BlockWord, Sha256, Table16Chip, Table16Config, BLOCK_SIZE};
+use halo2_sha256::{BlockWord, Sha256Chip, Table16Chip, Table16Config, BLOCK_SIZE};
 
 use halo2wrong::halo2::{
     poly::{
