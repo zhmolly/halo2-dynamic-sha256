@@ -1,7 +1,6 @@
 use std::convert::TryInto;
 use std::marker::PhantomData;
 
-use crate::sha256::Sha256Compression;
 use halo2wrong::{
     curves::FieldExt,
     halo2::{
@@ -10,7 +9,7 @@ use halo2wrong::{
     },
 };
 
-mod compression;
+pub(crate) mod compression;
 mod gates;
 mod message_schedule;
 mod spread_table;
@@ -330,10 +329,11 @@ impl<F: FieldExt> Table16Chip<F> {
     }
 }
 
-impl<F: FieldExt> Sha256Compression<F> for Table16Chip<F> {
-    type State = State<F>;
-    type BlockWord = BlockWord;
-    fn initialization_vector(&self, layouter: &mut impl Layouter<F>) -> Result<State<F>, Error> {
+impl<F: FieldExt> Table16Chip<F> {
+    pub fn initialization_vector(
+        &self,
+        layouter: &mut impl Layouter<F>,
+    ) -> Result<State<F>, Error> {
         let mut init_vector = [Value::unknown(); STATE];
         for i in 0..STATE {
             init_vector[i] = Value::known(IV[i]);
@@ -343,7 +343,7 @@ impl<F: FieldExt> Sha256Compression<F> for Table16Chip<F> {
             .initialize_with_iv(layouter, init_vector)
     }
 
-    fn initialization(
+    pub fn initialization(
         &self,
         layouter: &mut impl Layouter<F>,
         init_state: &State<F>,
@@ -355,7 +355,7 @@ impl<F: FieldExt> Sha256Compression<F> for Table16Chip<F> {
 
     // Given an initialized state and an input message block, compress the
     // message block and return the final state.
-    fn compress(
+    pub fn compress(
         &self,
         layouter: &mut impl Layouter<F>,
         initialized_state: &State<F>,
@@ -369,18 +369,6 @@ impl<F: FieldExt> Sha256Compression<F> for Table16Chip<F> {
         Ok((state, assigned_inputs))
     }
 
-    /*fn digest(
-        &self,
-        layouter: &mut impl Layouter<F>,
-        state: &State<F>,
-    ) -> Result<[BlockWord; super::DIGEST_SIZE], Error> {
-        // Copy the dense forms of the state variable chunks down to this gate.
-        // Reconstruct the 32-bit dense words.
-        self.config().compression.digest(layouter, state.clone())
-    }*/
-}
-
-impl<F: FieldExt> Table16Chip<F> {
     pub(crate) fn compression_config(&self) -> CompressionConfig {
         self.config.compression.clone()
     }
