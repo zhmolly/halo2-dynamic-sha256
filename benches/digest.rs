@@ -28,7 +28,7 @@ use halo2wrong::halo2::{
     },
     transcript::{TranscriptReadBuffer, TranscriptWriterBuffer},
 };
-
+/*
 #[allow(dead_code)]
 fn bench(name: &str, k: u32, c: &mut Criterion) {
     #[derive(Default)]
@@ -52,7 +52,7 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
             mut layouter: impl Layouter<pallas::Base>,
         ) -> Result<(), Error> {
             Table16Chip::load(config.clone(), &mut layouter)?;
-            let table16_chip = Table16Chip::construct(config);
+            //let table16_chip = Table16Chip::construct(config);
 
             // Test vector: "abc"
             let test_input = [
@@ -80,7 +80,7 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
                 input.extend_from_slice(&test_input);
             }
 
-            Sha256::digest(table16_chip, layouter.namespace(|| "'abc' * 2"), &input)?;
+            //Sha256Chip::digest(table16_chip, layouter.namespace(|| "'abc' * 2"), &input)?;
 
             Ok(())
         }
@@ -174,3 +174,4 @@ fn criterion_benchmark(c: &mut Criterion) {
 
 criterion_group!(benches, criterion_benchmark);
 criterion_main!(benches);
+*/
