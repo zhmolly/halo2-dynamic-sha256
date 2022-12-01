@@ -1,7 +1,9 @@
 [package]
-name = "halo2_sha256"
+name = "halo2-dynamic-sha256"
 version = "0.1.0"
 edition = "2018"
+authors = ["Sora Suegami"]
+description = "SHA256 verification circuit in halo2 supporting dynamic length input."
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
