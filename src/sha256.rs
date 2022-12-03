@@ -3,8 +3,7 @@
 //! [SHA-256]: https://tools.ietf.org/html/rfc6234
 
 use std::convert::TryInto;
-use std::fmt;
-use std::{cmp::min, ops::Deref};
+use std::ops::Deref;
 
 use crate::{
     AssignedBits, BlockWord, RoundWordDense, State, Table16Chip, Table16Config, BLOCK_SIZE,
@@ -13,8 +12,8 @@ use crate::{
 use halo2wrong::{
     halo2::{
         arithmetic::FieldExt,
-        circuit::{layouter, AssignedCell, Chip, Layouter, Value},
-        plonk::{Advice, Column, ConstraintSystem, Error, Selector},
+        circuit::{Layouter, Value},
+        plonk::{ConstraintSystem, Error},
     },
     RegionCtx,
 };
@@ -242,9 +241,10 @@ impl<F: FieldExt> Sha256Chip<F> {
                 let len_padding_end =
                     main_gate.add_constant(ctx, &len_padding_start, F::from_u128(8u128))?;
                 let one_padding = main_gate.assign_constant(ctx, F::from_u128(0x80u128))?;
-                let two = main_gate.assign_constant(ctx, F::from_u128(2u128))?;
-                let two_inv = main_gate.invert_unsafe(ctx, &two)?;
-                let mut two_pow = main_gate.assign_constant(ctx, F::from_u128(1u128 << 8))?;
+                let two_eight = main_gate.assign_constant(ctx, F::from_u128(1u128 << 8))?;
+                let two_eight_inv = main_gate.invert_unsafe(ctx, &two_eight)?;
+                let mut two_eight_pow =
+                    main_gate.assign_constant(ctx, F::from_u128(1u128 << 64))?;
                 let mut decomposed_len_acc = main_gate.assign_constant(ctx, F::zero())?;
 
                 for i in 0..max_byte_size {
@@ -283,12 +283,13 @@ impl<F: FieldExt> Sha256Chip<F> {
                         let is_valid_len = main_gate.and(ctx, &is_greater_than_or_eq, &is_less)?;
                         is_valid_len
                     };
-                    two_pow = {
-                        let dived = main_gate.mul(ctx, &two_pow, &two_inv)?;
-                        main_gate.select(ctx, &dived, &two_pow, &is_len_padding)?
+                    two_eight_pow = {
+                        let dived = main_gate.mul(ctx, &two_eight_pow, &two_eight_inv)?;
+                        main_gate.select(ctx, &dived, &two_eight_pow, &is_len_padding)?
                     };
                     decomposed_len_acc = {
-                        let term = main_gate.mul(ctx, &assigned_padded_inputs[i], &two_pow)?;
+                        let term =
+                            main_gate.mul(ctx, &assigned_padded_inputs[i], &two_eight_pow)?;
                         let added = main_gate.add(ctx, &decomposed_len_acc, &term)?;
                         main_gate.select(ctx, &added, &decomposed_len_acc, &is_len_padding)?
                     };
@@ -311,7 +312,7 @@ impl<F: FieldExt> Sha256Chip<F> {
                     main_gate.assert_one(ctx, &sel_sum)?;
                 }
 
-                main_gate.assert_one(ctx, &two_pow)?;
+                main_gate.assert_one(ctx, &two_eight_pow)?;
                 let eight = main_gate.assign_constant(ctx, F::from_u128(8u128))?;
                 let assigned_inpu_bits_size =
                     main_gate.mul(ctx, &assigned_inpu_byte_size, &eight)?;
@@ -321,17 +322,19 @@ impl<F: FieldExt> Sha256Chip<F> {
             },
         )?;
 
-        for (i, input_block) in padded_inputs.chunks((32 / 8) * BLOCK_SIZE).enumerate() {
+        for (i, assigned_input_block) in assigned_padded_inputs
+            .chunks((32 / 8) * BLOCK_SIZE)
+            .enumerate()
+        {
+            let input_block = assigned_input_block
+                .iter()
+                .map(|cell| cell.value().map(|v| v.get_lower_32()))
+                .collect::<Vec<Value<u32>>>();
             let blockword_inputs = input_block
                 .chunks(32 / 8)
                 .map(|vals| {
                     let val_u32 = vals[0].zip(vals[1]).zip(vals[2]).zip(vals[3]).map(
-                        |(((v0, v1), v2), v3)| {
-                            (v3 as u32)
-                                + (1 << 8) * (v2 as u32)
-                                + (1 << 16) * (v1 as u32)
-                                + (1 << 24) * (v0 as u32)
-                        },
+                        |(((v0, v1), v2), v3)| v3 + (1 << 8) * v2 + (1 << 16) * v1 + (1 << 24) * v0,
                     );
                     BlockWord(val_u32)
                 })
@@ -348,7 +351,7 @@ impl<F: FieldExt> Sha256Chip<F> {
                     let u8 = main_gate.assign_constant(ctx, F::from_u128(1u128 << 8))?;
                     let u16 = main_gate.assign_constant(ctx, F::from_u128(1u128 << 16))?;
                     let u24 = main_gate.assign_constant(ctx, F::from_u128(1u128 << 24))?;
-                    for vals in assigned_padded_inputs.chunks(32 / 8) {
+                    for vals in assigned_input_block.chunks(32 / 8) {
                         let assigned_u32 = main_gate.mul_add(ctx, &u8, &vals[2], &vals[3])?;
                         let assigned_u32 = main_gate.mul_add(ctx, &u16, &vals[1], &assigned_u32)?;
                         let assigned_u32 = main_gate.mul_add(ctx, &u24, &vals[0], &assigned_u32)?;
@@ -632,29 +635,12 @@ mod test {
                 )?;
             }
 
-            /*let mut output_cells = Vec::new();
-            layouter.assign_region(
-                || "expose sha256 outputs",
-                |mut region| {
-                    for (i, word) in output.0.iter().enumerate() {
-                        word.0.map(|v| println!("output {}", v));
-                        let assigned_cell = region.assign_advice(
-                            || format!("{} th output advice", i),
-                            config.clone().output_advice,
-                            i,
-                            || word.0.map(|v| F::from(1 as u64)),
-                        )?;
-                        output_cells.push(assigned_cell);
-                    }
-                    Ok(())
-                },
-            )?;*/
             Ok(())
         }
     }
 
     impl<F: FieldExt> TestCircuit<F> {
-        const MAX_BYTE_SIZE: usize = 64;
+        const MAX_BYTE_SIZE: usize = 128;
 
         fn sha256_chip(&self, config: Sha256Config) -> Sha256Chip<F> {
             Sha256Chip::new(config)
@@ -705,6 +691,91 @@ mod test {
         let test_output: [u32; 8] = [
             0x6e340b9c, 0xffb37a98, 0x9ca544e6, 0xbb780a2c, 0x78901d3f, 0xb3373876, 0x8511a306,
             0x17afa01d,
+        ];
+        let test_output = test_output.map(|val| Base::from_u128(val as u128));
+        let public_inputs = vec![test_output.to_vec()];
+
+        let prover = MockProver::run(k, &circuit, public_inputs).unwrap();
+        assert_eq!(prover.verify(), Ok(()));
+    }
+
+    #[test]
+    fn test_sha256_correct3() {
+        use halo2wrong::curves::pasta::pallas::Base;
+        use halo2wrong::halo2::dev::MockProver;
+
+        let k = 18;
+
+        let test_input = vec![
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+            Value::known(0x1),
+        ];
+
+        let circuit = TestCircuit::<Base> {
+            test_input,
+            _f: PhantomData,
+        };
+        let test_output: [u32; 8] = [
+            0x5e4084ef, 0xf2f37d63, 0x7e6502bf, 0x9472b002, 0x9755bbd1, 0x30ebb52c, 0x8c33bb81,
+            0x48c31fd2,
         ];
         let test_output = test_output.map(|val| Base::from_u128(val as u128));
         let public_inputs = vec![test_output.to_vec()];
