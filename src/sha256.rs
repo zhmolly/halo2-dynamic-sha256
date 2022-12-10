@@ -41,7 +41,7 @@ pub type AssignedDigest<F> = [AssignedValue<F>; DIGEST_SIZE];
 
 /// A gadget that constrains a SHA-256 invocation. It supports input at a granularity of
 /// 32 bits.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Sha256Chip<F: FieldExt> {
     config: Sha256Config,
     states: Vec<State<F>>,
