@@ -24,8 +24,8 @@ use halo2wrong::{
 pub struct Sha256Digest<BlockWord>(pub [BlockWord; DIGEST_SIZE]);*/
 
 use maingate::{
-    AssignedValue, MainGate, MainGateConfig, MainGateInstructions, RangeChip, RangeConfig,
-    RangeInstructions,
+    decompose, AssignedValue, MainGate, MainGateConfig, MainGateInstructions, RangeChip,
+    RangeConfig, RangeInstructions,
 };
 
 #[derive(Debug, Clone)]
@@ -90,8 +90,8 @@ impl<F: FieldExt> Sha256Chip<F> {
         Ok(())
     }
 
-    pub fn digest(
-        mut self,
+    pub fn finalize(
+        &mut self,
         layouter: &mut impl Layouter<F>,
         inputs: &[Value<u8>],
     ) -> Result<(AssignedDigest<F>, Vec<AssignedValue<F>>), Error> {
@@ -413,6 +413,41 @@ impl<F: FieldExt> Sha256Chip<F> {
         Table16Chip::construct(self.config.table16_config.clone())
     }
 
+    pub fn decompose_digest_to_bytes(
+        &self,
+        layouter: &mut impl Layouter<F>,
+        digest: &[AssignedValue<F>],
+    ) -> Result<[AssignedValue<F>; 4 * DIGEST_SIZE], Error> {
+        let main_gate = self.main_gate();
+        let range_chip = self.range_chip();
+        let assigned_bytes = layouter.assign_region(
+            || "decompose_digest_to_bytes",
+            |region| {
+                let ctx = &mut RegionCtx::new(region, 0);
+                let mut assigned_bytes = Vec::new();
+                for word in digest.into_iter() {
+                    let mut bytes = range_chip
+                        .decompose(ctx, word.value().map(|v| *v), 8, 32)?
+                        .1;
+                    bytes.reverse();
+                    assigned_bytes.append(&mut bytes);
+                }
+
+                let u8 = main_gate.assign_constant(ctx, F::from_u128(1u128 << 8))?;
+                let u16 = main_gate.assign_constant(ctx, F::from_u128(1u128 << 16))?;
+                let u24 = main_gate.assign_constant(ctx, F::from_u128(1u128 << 24))?;
+                for (idx, bytes) in assigned_bytes.chunks(32 / 8).enumerate() {
+                    let assigned_u32 = main_gate.mul_add(ctx, &u8, &bytes[2], &bytes[3])?;
+                    let assigned_u32 = main_gate.mul_add(ctx, &u16, &bytes[1], &assigned_u32)?;
+                    let assigned_u32 = main_gate.mul_add(ctx, &u24, &bytes[0], &assigned_u32)?;
+                    main_gate.is_equal(ctx, &assigned_u32, &digest[idx])?;
+                }
+                Ok(assigned_bytes)
+            },
+        )?;
+        Ok(assigned_bytes.try_into().unwrap())
+    }
+
     fn compute_one_round(
         &self,
         layouter: &mut impl Layouter<F>,
@@ -626,8 +661,9 @@ mod test {
             range_chip.load_table(&mut layouter)?;
             Table16Chip::load(config.table16_config.clone(), &mut layouter)?;
             let maingate = sha256_chip.main_gate();
-            let (digest, assigned_input) = sha256_chip.digest(&mut layouter, &self.test_input)?;
-            for (i, cell) in digest.iter().enumerate() {
+            let (digest, assigned_input) = sha256_chip.finalize(&mut layouter, &self.test_input)?;
+            let assigned_bytes = sha256_chip.decompose_digest_to_bytes(&mut layouter, &digest)?;
+            for (i, cell) in assigned_bytes.iter().enumerate() {
                 maingate.expose_public(
                     layouter.namespace(|| format!("region {}", i)),
                     cell.clone(),
@@ -667,7 +703,14 @@ mod test {
             test_input,
             _f: PhantomData,
         };
-        let test_output = COMPRESSION_OUTPUT.map(|val| Base::from_u128(val as u128));
+        let test_output: [u8; 32] = [
+            0b10111010, 0b01111000, 0b00010110, 0b10111111, 0b10001111, 0b00000001, 0b11001111,
+            0b11101010, 0b01000001, 0b01000001, 0b01000000, 0b11011110, 0b01011101, 0b10101110,
+            0b00100010, 0b00100011, 0b10110000, 0b00000011, 0b01100001, 0b10100011, 0b10010110,
+            0b00010111, 0b01111010, 0b10011100, 0b10110100, 0b00010000, 0b11111111, 0b01100001,
+            0b11110010, 0b00000000, 0b00010101, 0b10101101,
+        ];
+        let test_output = test_output.map(|val| Base::from_u128(val as u128));
         let public_inputs = vec![test_output.to_vec()];
 
         let prover = MockProver::run(k, &circuit, public_inputs).unwrap();
@@ -688,9 +731,10 @@ mod test {
             test_input,
             _f: PhantomData,
         };
-        let test_output: [u32; 8] = [
-            0x6e340b9c, 0xffb37a98, 0x9ca544e6, 0xbb780a2c, 0x78901d3f, 0xb3373876, 0x8511a306,
-            0x17afa01d,
+        let test_output: [u8; 32] = [
+            0x6e, 0x34, 0x0b, 0x9c, 0xff, 0xb3, 0x7a, 0x98, 0x9c, 0xa5, 0x44, 0xe6, 0xbb, 0x78,
+            0x0a, 0x2c, 0x78, 0x90, 0x1d, 0x3f, 0xb3, 0x37, 0x38, 0x76, 0x85, 0x11, 0xa3, 0x06,
+            0x17, 0xaf, 0xa0, 0x1d,
         ];
         let test_output = test_output.map(|val| Base::from_u128(val as u128));
         let public_inputs = vec![test_output.to_vec()];
@@ -773,9 +817,10 @@ mod test {
             test_input,
             _f: PhantomData,
         };
-        let test_output: [u32; 8] = [
-            0x5e4084ef, 0xf2f37d63, 0x7e6502bf, 0x9472b002, 0x9755bbd1, 0x30ebb52c, 0x8c33bb81,
-            0x48c31fd2,
+        let test_output: [u8; 32] = [
+            0x5e, 0x40, 0x84, 0xef, 0xf2, 0xf3, 0x7d, 0x63, 0x7e, 0x65, 0x02, 0xbf, 0x94, 0x72,
+            0xb0, 0x02, 0x97, 0x55, 0xbb, 0xd1, 0x30, 0xeb, 0xb5, 0x2c, 0x8c, 0x33, 0xbb, 0x81,
+            0x48, 0xc3, 0x1f, 0xd2,
         ];
         let test_output = test_output.map(|val| Base::from_u128(val as u128));
         let public_inputs = vec![test_output.to_vec()];
