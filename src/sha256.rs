@@ -37,6 +37,30 @@ pub struct Sha256Config {
     max_round: usize,
 }
 
+impl Sha256Config {
+    pub fn new(
+        main_gate_config: MainGateConfig,
+        range_config: RangeConfig,
+        table16_config: Table16Config,
+        max_byte_size: usize,
+    ) -> Self {
+        let one_round_size = 4 * BLOCK_SIZE;
+        let max_round = if max_byte_size % one_round_size == 0 {
+            max_byte_size / one_round_size
+        } else {
+            max_byte_size / one_round_size + 1
+        };
+
+        Self {
+            main_gate_config,
+            range_config,
+            table16_config,
+            max_byte_size,
+            max_round,
+        }
+    }
+}
+
 pub type AssignedDigest<F> = [AssignedValue<F>; DIGEST_SIZE];
 
 /// A gadget that constrains a SHA-256 invocation. It supports input at a granularity of
@@ -55,32 +79,32 @@ impl<F: FieldExt> Sha256Chip<F> {
         Self { config, states }
     }
 
-    pub fn configure(meta: &mut ConstraintSystem<F>, max_byte_size: usize) -> Sha256Config {
-        let main_gate_config = MainGate::configure(meta);
-
+    pub fn compute_range_lens() -> (Vec<usize>, Vec<usize>) {
         let composition_bit_lens = vec![
             8 / Self::NUM_LOOKUP_TABLES,
             32 / Self::NUM_LOOKUP_TABLES,
             64 / Self::NUM_LOOKUP_TABLES,
         ];
-        let range_config =
-            RangeChip::configure(meta, &main_gate_config, composition_bit_lens, vec![]);
+        (composition_bit_lens, vec![])
+    }
+
+    pub fn configure(meta: &mut ConstraintSystem<F>, max_byte_size: usize) -> Sha256Config {
+        let main_gate_config = MainGate::configure(meta);
+
+        let (composition_bit_lens, overflow_bit_lens) = Self::compute_range_lens();
+        let range_config = RangeChip::configure(
+            meta,
+            &main_gate_config,
+            composition_bit_lens,
+            overflow_bit_lens,
+        );
         let table16_config = Table16Chip::configure(meta);
-
-        let one_round_size = 4 * BLOCK_SIZE;
-        let max_round = if max_byte_size % one_round_size == 0 {
-            max_byte_size / one_round_size
-        } else {
-            max_byte_size / one_round_size + 1
-        };
-
-        Sha256Config {
+        Sha256Config::new(
             main_gate_config,
             range_config,
             table16_config,
             max_byte_size,
-            max_round,
-        }
+        )
     }
 
     pub fn init(&mut self, layouter: &mut impl Layouter<F>) -> Result<(), Error> {
@@ -537,12 +561,6 @@ impl<F: FieldExt> Sha256Chip<F> {
         idx: usize,
     ) -> Result<AssignedDigest<F>, Error> {
         self.state_to_assigned_halves(ctx, &self.states[idx])
-    }
-
-    pub fn compute_range_lens() -> (Vec<usize>, Vec<usize>) {
-        let composition_bit_lens = vec![8 / Self::NUM_LOOKUP_TABLES, 32 / Self::NUM_LOOKUP_TABLES];
-        let overflow_bit_lens = vec![];
-        (composition_bit_lens, overflow_bit_lens)
     }
 
     fn state_to_assigned_halves(
