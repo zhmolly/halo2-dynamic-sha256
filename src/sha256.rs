@@ -12,7 +12,7 @@ use crate::{
 use halo2wrong::{
     halo2::{
         arithmetic::FieldExt,
-        circuit::{Layouter, Value},
+        circuit::{Chip, Layouter, Value},
         plonk::{ConstraintSystem, Error},
     },
     RegionCtx,
@@ -108,6 +108,7 @@ impl<F: FieldExt> Sha256Chip<F> {
     }
 
     pub fn init(&mut self, layouter: &mut impl Layouter<F>) -> Result<(), Error> {
+        Table16Chip::load(self.config.table16_config.clone(), layouter)?;
         let table16_chip = self.table16_chip();
         let init_state = table16_chip.initialization_vector(layouter)?;
         self.states.push(init_state);
@@ -677,7 +678,6 @@ mod test {
             sha256_chip.init(&mut layouter)?;
             let range_chip = sha256_chip.range_chip();
             range_chip.load_table(&mut layouter)?;
-            Table16Chip::load(config.table16_config.clone(), &mut layouter)?;
             let maingate = sha256_chip.main_gate();
             let (digest, assigned_input) = sha256_chip.finalize(&mut layouter, &self.test_input)?;
             let assigned_bytes = sha256_chip.decompose_digest_to_bytes(&mut layouter, &digest)?;
