@@ -218,7 +218,8 @@ impl<F: FieldExt> Sha256Chip<F> {
             padded_inputs.push(Value::known(0));
         }
         let mut input_len_bytes = [0; 8];
-        input_len_bytes.copy_from_slice(&(8 * input_byte_size).to_le_bytes());
+        let le_size_bytes = (8 * input_byte_size).to_le_bytes();
+        input_len_bytes[0..le_size_bytes.len()].copy_from_slice(&le_size_bytes);
         for byte in input_len_bytes.iter().rev() {
             padded_inputs.push(Value::known(*byte));
         }
