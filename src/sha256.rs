@@ -217,7 +217,9 @@ impl<F: FieldExt> Sha256Chip<F> {
         for _ in 0..zero_padding_byte_size {
             padded_inputs.push(Value::known(0));
         }
-        for byte in (8 * input_byte_size).to_le_bytes().iter().rev() {
+        let mut input_len_bytes = [0; 8];
+        input_len_bytes.copy_from_slice(&(8 * input_byte_size).to_le_bytes());
+        for byte in input_len_bytes.iter().rev() {
             padded_inputs.push(Value::known(*byte));
         }
         assert_eq!(padded_inputs.len(), num_round * one_round_size);
@@ -766,7 +768,7 @@ mod test {
         use halo2wrong::curves::pasta::pallas::Base;
         use halo2wrong::halo2::dev::MockProver;
 
-        let k = 18;
+        let k = 17;
 
         let test_input = vec![
             Value::known(0x1),
