@@ -142,75 +142,70 @@ impl<F: FieldExt> Sha256Chip<F> {
         let main_gate = self.main_gate();
         let range_chip = self.range_chip();
 
-        let (assigned_inpu_byte_size, assigned_zero_padding_byte_size, assigned_num_round) =
-            layouter.assign_region(
-                || "digest:conbined_inputs",
-                |region| {
-                    let ctx = &mut RegionCtx::new(region, 0);
-                    let assigned_inpu_byte_size = main_gate
-                        .assign_value(ctx, Value::known(F::from_u128(input_byte_size as u128)))?;
-                    let assigned_zero_padding_byte_size = main_gate.assign_value(
+        let assigned_num_round = layouter.assign_region(
+            || "digest:conbined_inputs",
+            |region| {
+                let ctx = &mut RegionCtx::new(region, 0);
+                let assigned_inpu_byte_size = main_gate
+                    .assign_value(ctx, Value::known(F::from_u128(input_byte_size as u128)))?;
+                /*let assigned_zero_padding_byte_size = main_gate.assign_value(
+                    ctx,
+                    Value::known(F::from_u128(zero_padding_byte_size as u128)),
+                )?;*/
+
+                let assigned_num_round =
+                    main_gate.assign_value(ctx, Value::known(F::from_u128(num_round as u128)))?;
+                /*let assigned_one_round_size =
+                main_gate.assign_constant(ctx, F::from_u128(one_round_size as u128))?;*/
+                let assigned_max_round =
+                    main_gate.assign_constant(ctx, F::from_u128(max_round as u128))?;
+
+                /*let assigned_padded_size =
+                main_gate.mul(ctx, &assigned_one_round_size, &assigned_num_round)?;*/
+
+                // 1. 0<= input_byte_size, num_round < 2^64
+                {
+                    let range_assigned = range_chip.assign(
                         ctx,
-                        Value::known(F::from_u128(zero_padding_byte_size as u128)),
+                        assigned_inpu_byte_size.value().map(|v| *v),
+                        64 / Self::NUM_LOOKUP_TABLES,
+                        64,
                     )?;
-
-                    let assigned_num_round = main_gate
-                        .assign_value(ctx, Value::known(F::from_u128(num_round as u128)))?;
-                    let assigned_one_round_size =
-                        main_gate.assign_constant(ctx, F::from_u128(one_round_size as u128))?;
-                    let assigned_max_round =
-                        main_gate.assign_constant(ctx, F::from_u128(max_round as u128))?;
-
-                    let assigned_padded_size =
-                        main_gate.mul(ctx, &assigned_one_round_size, &assigned_num_round)?;
-
-                    // 1. 0<= input_byte_size, num_round < 2^64
-                    {
-                        let range_assigned = range_chip.assign(
-                            ctx,
-                            assigned_inpu_byte_size.value().map(|v| *v),
-                            64 / Self::NUM_LOOKUP_TABLES,
-                            64,
-                        )?;
-                        main_gate.assert_equal(ctx, &assigned_inpu_byte_size, &range_assigned)?;
-                    }
-                    {
-                        let range_assigned = range_chip.assign(
-                            ctx,
-                            assigned_num_round.value().map(|v| *v),
-                            64 / Self::NUM_LOOKUP_TABLES,
-                            64,
-                        )?;
-                        main_gate.assert_equal(ctx, &assigned_num_round, &range_assigned)?;
-                    }
-                    // 2. num_round <= max_round
-                    {
-                        let sub = main_gate.sub(ctx, &assigned_max_round, &assigned_num_round)?;
-                        let range_assigned = range_chip.assign(
-                            ctx,
-                            sub.value().map(|v| *v),
-                            64 / Self::NUM_LOOKUP_TABLES,
-                            64,
-                        )?;
-                        main_gate.assert_equal(ctx, &sub, &range_assigned)?;
-                    }
-                    // 3. padded_size == inpu_byte_size + zero_padding_byte_size + 9
-                    {
-                        let add1 = main_gate.add(
-                            ctx,
-                            &assigned_inpu_byte_size,
-                            &assigned_zero_padding_byte_size,
-                        )?;
-                        let add2 = main_gate.add_constant(ctx, &add1, F::from_u128(9u128))?;
-                        main_gate.assert_equal(ctx, &assigned_padded_size, &add2)?;
-                    }
-                    Ok((
-                        assigned_inpu_byte_size,
-                        assigned_zero_padding_byte_size,
-                        assigned_num_round,
-                    ))
-                },
-            )?;
+                    main_gate.assert_equal(ctx, &assigned_inpu_byte_size, &range_assigned)?;
+                }
+                {
+                    let range_assigned = range_chip.assign(
+                        ctx,
+                        assigned_num_round.value().map(|v| *v),
+                        64 / Self::NUM_LOOKUP_TABLES,
+                        64,
+                    )?;
+                    main_gate.assert_equal(ctx, &assigned_num_round, &range_assigned)?;
+                }
+                // 2. num_round <= max_round
+                {
+                    let sub = main_gate.sub(ctx, &assigned_max_round, &assigned_num_round)?;
+                    let range_assigned = range_chip.assign(
+                        ctx,
+                        sub.value().map(|v| *v),
+                        64 / Self::NUM_LOOKUP_TABLES,
+                        64,
+                    )?;
+                    main_gate.assert_equal(ctx, &sub, &range_assigned)?;
+                }
+                // 3. padded_size == inpu_byte_size + zero_padding_byte_size + 9
+                /*{
+                    let add1 = main_gate.add(
+                        ctx,
+                        &assigned_inpu_byte_size,
+                        &assigned_zero_padding_byte_size,
+                    )?;
+                    let add2 = main_gate.add_constant(ctx, &add1, F::from_u128(9u128))?;
+                    main_gate.assert_equal(ctx, &assigned_padded_size, &add2)?;
+                }*/
+                Ok(assigned_num_round)
+            },
+        )?;
 
         let mut padded_inputs = inputs.to_vec();
         padded_inputs.push(Value::known(0x80));
@@ -229,25 +224,34 @@ impl<F: FieldExt> Sha256Chip<F> {
         }
         assert_eq!(padded_inputs.len(), max_byte_size);
 
-        let assigned_padded_inputs = layouter.assign_region(
+        let assigned_padded_blocks = layouter.assign_region(
             || "digest:assigned_padded_inputs",
             |region| {
                 let ctx = &mut RegionCtx::new(region, 0);
                 padded_inputs
-                    .iter()
-                    .map(|val| {
+                    .chunks(4)
+                    .map(|vals| {
+                        let val_u32: Value<u32> =
+                            vals[0].zip(vals[1]).zip(vals[2]).zip(vals[3]).map(
+                                |(((v0, v1), v2), v3)| {
+                                    (v3 as u32)
+                                        + (1u32 << 8) * (v2 as u32)
+                                        + (1u32 << 16) * (v1 as u32)
+                                        + (1u32 << 24) * (v0 as u32)
+                                },
+                            );
                         range_chip.assign(
                             ctx,
-                            val.map(|v| F::from_u128(v as u128)),
-                            8 / Self::NUM_LOOKUP_TABLES,
-                            8,
+                            val_u32.map(|v| F::from_u128(v as u128)),
+                            32 / Self::NUM_LOOKUP_TABLES,
+                            32,
                         )
                     })
                     .collect::<Result<Vec<AssignedValue<F>>, Error>>()
             },
         )?;
 
-        let assigned_indexes = layouter.assign_region(
+        /*let assigned_indexes = layouter.assign_region(
             || "digest:assigned_indexes",
             |region| {
                 let ctx = &mut RegionCtx::new(region, 0);
@@ -348,45 +352,23 @@ impl<F: FieldExt> Sha256Chip<F> {
 
                 Ok(())
             },
-        )?;
+        )?;*/
 
-        for (i, assigned_input_block) in assigned_padded_inputs
-            .chunks((32 / 8) * BLOCK_SIZE)
-            .enumerate()
-        {
-            let input_block = assigned_input_block
+        for (i, assigned_blocks) in assigned_padded_blocks.chunks(BLOCK_SIZE).enumerate() {
+            let input_blocks = assigned_blocks
                 .iter()
-                .map(|cell| cell.value().map(|v| v.get_lower_32()))
-                .collect::<Vec<Value<u32>>>();
-            let blockword_inputs = input_block
-                .chunks(32 / 8)
-                .map(|vals| {
-                    let val_u32 = vals[0].zip(vals[1]).zip(vals[2]).zip(vals[3]).map(
-                        |(((v0, v1), v2), v3)| v3 + (1 << 8) * v2 + (1 << 16) * v1 + (1 << 24) * v0,
-                    );
-                    BlockWord(val_u32)
-                })
+                .map(|cell| BlockWord(cell.value().map(|v| v.get_lower_32())))
                 .collect::<Vec<BlockWord>>();
-            let (new_state, assigned_inputs) =
-                self.compute_one_round(layouter, blockword_inputs.try_into().unwrap())?;
+            let (new_state, table16_assigned_inputs) =
+                self.compute_one_round(layouter, input_blocks.try_into().unwrap())?;
             self.states.push(new_state);
 
             layouter.assign_region(
                 || format!("digest:assigned_u32s:{}", i),
                 |region| {
                     let ctx = &mut RegionCtx::new(region, 0);
-                    let mut assigned_u32s = Vec::new();
-                    let u8 = main_gate.assign_constant(ctx, F::from_u128(1u128 << 8))?;
-                    let u16 = main_gate.assign_constant(ctx, F::from_u128(1u128 << 16))?;
-                    let u24 = main_gate.assign_constant(ctx, F::from_u128(1u128 << 24))?;
-                    for vals in assigned_input_block.chunks(32 / 8) {
-                        let assigned_u32 = main_gate.mul_add(ctx, &u8, &vals[2], &vals[3])?;
-                        let assigned_u32 = main_gate.mul_add(ctx, &u16, &vals[1], &assigned_u32)?;
-                        let assigned_u32 = main_gate.mul_add(ctx, &u24, &vals[0], &assigned_u32)?;
-                        assigned_u32s.push(assigned_u32);
-                    }
-                    for (input, u32) in assigned_inputs.iter().zip(assigned_u32s) {
-                        ctx.constrain_equal(input.deref().cell(), u32.cell())?;
+                    for (block1, block2) in assigned_blocks.iter().zip(&table16_assigned_inputs) {
+                        ctx.constrain_equal(block1.cell(), block2.cell())?;
                     }
                     Ok(())
                 },
@@ -423,7 +405,7 @@ impl<F: FieldExt> Sha256Chip<F> {
             },
         )?;
 
-        Ok((new_digest_values, assigned_padded_inputs))
+        Ok((new_digest_values, assigned_padded_blocks))
     }
 
     /// Getter for [`RangeChip`].
@@ -711,7 +693,7 @@ mod test {
         use halo2wrong::curves::pasta::pallas::Base;
         use halo2wrong::halo2::dev::MockProver;
 
-        let k = 18;
+        let k = 17;
 
         // Test vector: "abc"
         let test_input = vec![
@@ -743,7 +725,7 @@ mod test {
         use halo2wrong::curves::pasta::pallas::Base;
         use halo2wrong::halo2::dev::MockProver;
 
-        let k = 18;
+        let k = 17;
 
         // Test vector: "0x0"
         let test_input = vec![Value::known(0u8)];
