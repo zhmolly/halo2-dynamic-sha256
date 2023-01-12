@@ -1,95 +1,102 @@
-use halo2wrong::curves::pasta::{pallas, EqAffine};
+use halo2wrong::curves::bn256::{Bn256, Fr};
+use halo2wrong::curves::FieldExt;
+use halo2wrong::halo2::poly::kzg::{
+    commitment::{KZGCommitmentScheme, ParamsKZG},
+    multiopen::{ProverGWC, VerifierGWC},
+    strategy::SingleStrategy,
+};
 use halo2wrong::halo2::{
     circuit::{Layouter, SimpleFloorPlanner, Value},
-    plonk::{create_proof, keygen_pk, keygen_vk, verify_proof, Circuit, ConstraintSystem, Error},
+    plonk::{
+        create_proof, keygen_pk, keygen_vk, verify_proof, Advice, Circuit, Column,
+        ConstraintSystem, Error, Instance,
+    },
     poly::commitment::Params,
     transcript::{Blake2bRead, Blake2bWrite, Challenge255},
 };
 use rand::rngs::OsRng;
+use rand::{thread_rng, Rng};
 
+use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io::{prelude::*, BufReader},
     path::Path,
 };
 
+use std::marker::PhantomData;
+
 use criterion::{criterion_group, criterion_main, Criterion};
 
 use halo2_dynamic_sha256::{Field, Sha256Chip, Sha256Config};
 
 use halo2wrong::halo2::{
-    poly::{
-        commitment::ParamsProver,
-        ipa::{
-            commitment::{IPACommitmentScheme, ParamsIPA},
-            multiopen::{ProverIPA, VerifierIPA},
-            strategy::AccumulatorStrategy,
-        },
-    },
+    poly::commitment::ParamsProver,
     transcript::{TranscriptReadBuffer, TranscriptWriterBuffer},
 };
-/*
-#[allow(dead_code)]
-fn bench(name: &str, k: u32, c: &mut Criterion) {
-    #[derive(Default)]
-    struct MyCircuit {}
 
-    impl Circuit<pallas::Base> for MyCircuit {
-        type Config = Table16Config;
+fn bench(name: &str, k: u32, c: &mut Criterion) {
+    #[derive(Debug, Clone)]
+    struct BenchConfig<F: Field> {
+        sha256_config: Sha256Config<F>,
+        r_instance: Column<Instance>,
+        hash_instance: Column<Instance>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct BenchCircuit<F: Field> {
+        test_input: Vec<u8>,
+        r: F,
+        _f: PhantomData<F>,
+    }
+
+    impl<F: Field> Circuit<F> for BenchCircuit<F> {
+        type Config = BenchConfig<F>;
         type FloorPlanner = SimpleFloorPlanner;
 
         fn without_witnesses(&self) -> Self {
-            Self::default()
+            unimplemented!()
         }
 
-        fn configure(meta: &mut ConstraintSystem<pallas::Base>) -> Self::Config {
-            Table16Chip::configure(meta)
+        fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
+            let sha256_config = Sha256Config::configure(meta, Self::MAX_BYTE_SIZE);
+            let r_instance = meta.instance_column();
+            meta.enable_equality(r_instance);
+            let hash_instance = meta.instance_column();
+            meta.enable_equality(hash_instance);
+            Self::Config {
+                sha256_config,
+                r_instance,
+                hash_instance,
+            }
         }
 
         fn synthesize(
             &self,
             config: Self::Config,
-            mut layouter: impl Layouter<pallas::Base>,
+            mut layouter: impl Layouter<F>,
         ) -> Result<(), Error> {
-            Table16Chip::load(config.clone(), &mut layouter)?;
-            //let table16_chip = Table16Chip::construct(config);
-
-            // Test vector: "abc"
-            let test_input = [
-                BlockWord(Value::known(0b01100001011000100110001110000000)),
-                BlockWord(Value::known(0b00000000000000000000000000000000)),
-                BlockWord(Value::known(0b00000000000000000000000000000000)),
-                BlockWord(Value::known(0b00000000000000000000000000000000)),
-                BlockWord(Value::known(0b00000000000000000000000000000000)),
-                BlockWord(Value::known(0b00000000000000000000000000000000)),
-                BlockWord(Value::known(0b00000000000000000000000000000000)),
-                BlockWord(Value::known(0b00000000000000000000000000000000)),
-                BlockWord(Value::known(0b00000000000000000000000000000000)),
-                BlockWord(Value::known(0b00000000000000000000000000000000)),
-                BlockWord(Value::known(0b00000000000000000000000000000000)),
-                BlockWord(Value::known(0b00000000000000000000000000000000)),
-                BlockWord(Value::known(0b00000000000000000000000000000000)),
-                BlockWord(Value::known(0b00000000000000000000000000000000)),
-                BlockWord(Value::known(0b00000000000000000000000000000000)),
-                BlockWord(Value::known(0b00000000000000000000000000011000)),
-            ];
-
-            // Create a message of length 31 blocks
-            let mut input = Vec::with_capacity(31 * BLOCK_SIZE);
-            for _ in 0..31 {
-                input.extend_from_slice(&test_input);
+            let sha256_chip = Sha256Chip::new(config.sha256_config.clone());
+            let (assigned_r, assigned_input, assigned_hash) = layouter.assign_region(
+                || "sha256_chip",
+                |mut region| sha256_chip.digest(&mut region, &self.test_input, self.r),
+            )?;
+            layouter.constrain_instance(assigned_r.cell(), config.r_instance, 0)?;
+            for (idx, cell) in assigned_hash.into_iter().rev().enumerate() {
+                layouter.constrain_instance(cell.cell(), config.hash_instance, idx)?;
             }
-
-            //Sha256Chip::digest(table16_chip, layouter.namespace(|| "'abc' * 2"), &input)?;
-
             Ok(())
         }
+    }
+
+    impl<F: Field> BenchCircuit<F> {
+        const MAX_BYTE_SIZE: usize = 128;
     }
 
     // Initialize the polynomial commitment parameters
     let params_path = Path::new("./benches/sha256_params");
     if File::open(&params_path).is_err() {
-        let params: ParamsIPA<EqAffine> = ParamsIPA::new(k);
+        let params: ParamsKZG<Bn256> = ParamsKZG::new(k);
         let mut buf = Vec::new();
 
         params.write(&mut buf).expect("Failed to write params");
@@ -100,16 +107,26 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
     }
 
     let params_fs = File::open(&params_path).expect("couldn't load sha256_params");
-    let params: ParamsIPA<EqAffine> =
-        ParamsIPA::read::<_>(&mut BufReader::new(params_fs)).expect("Failed to read params");
+    let params: ParamsKZG<Bn256> =
+        ParamsKZG::read::<_>(&mut BufReader::new(params_fs)).expect("Failed to read params");
+    let rng = thread_rng();
+    let r = <Fr as halo2wrong::halo2::arithmetic::Field>::random(rng);
 
-    let empty_circuit: MyCircuit = MyCircuit {};
+    let test_input = vec![0; 60];
+    let output = Sha256::digest(&test_input);
+    let output = output
+        .into_iter()
+        .map(|byte| Fr::from(byte as u64))
+        .collect::<Vec<Fr>>();
+    let circuit = BenchCircuit {
+        test_input: test_input.clone(),
+        r,
+        _f: PhantomData,
+    };
 
     // Initialize the proving key
-    let vk = keygen_vk(&params, &empty_circuit).expect("keygen_vk should not fail");
-    let pk = keygen_pk(&params, vk, &empty_circuit).expect("keygen_pk should not fail");
-
-    let circuit: MyCircuit = MyCircuit {};
+    let vk = keygen_vk(&params, &circuit).expect("keygen_vk should not fail");
+    let pk = keygen_pk(&params, vk, &circuit).expect("keygen_pk should not fail");
 
     // let prover_name = name.to_string() + "-prover";
     let verifier_name = name.to_string() + "-verifier";
@@ -125,53 +142,38 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
     // });
 
     // Create a proof
-    let proof_path = Path::new("./benches/sha256_proof");
-    if File::open(&proof_path).is_err() {
-        let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
-        create_proof::<IPACommitmentScheme<_>, ProverIPA<_>, _, _, _, _>(
-            &params,
-            &pk,
-            &[circuit],
-            &[],
-            OsRng,
-            &mut transcript,
-        )
-        .expect("proof generation should not fail");
-        let proof: Vec<u8> = transcript.finalize();
-        let mut file = File::create(&proof_path).expect("Failed to create sha256_proof");
-        file.write_all(&proof[..]).expect("Failed to write proof");
-    }
-
-    let mut proof_fs = File::open(&proof_path).expect("couldn't load sha256_proof");
-    let mut proof = Vec::<u8>::new();
-    proof_fs
-        .read_to_end(&mut proof)
-        .expect("Couldn't read proof");
+    let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
+    create_proof::<KZGCommitmentScheme<_>, ProverGWC<_>, _, _, _, _>(
+        &params,
+        &pk,
+        &[circuit],
+        &[&[&[r], &output]],
+        OsRng,
+        &mut transcript,
+    )
+    .expect("proof generation should not fail");
+    let proof: Vec<u8> = transcript.finalize();
 
     c.bench_function(&verifier_name, |b| {
         b.iter(|| {
-            use halo2wrong::halo2::poly::VerificationStrategy;
-            let strategy = AccumulatorStrategy::new(&params);
+            let strategy = SingleStrategy::new(&params);
             let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
-            let strategy = verify_proof::<IPACommitmentScheme<_>, VerifierIPA<_>, _, _, _>(
+            assert!(verify_proof::<_, VerifierGWC<_>, _, _, _>(
                 &params,
                 pk.get_vk(),
                 strategy,
-                &[],
-                &mut transcript,
+                &[&[&[r], &output]],
+                &mut transcript
             )
-            .unwrap();
-            assert!(strategy.finalize());
+            .is_ok());
         });
     });
 }
 
-#[allow(dead_code)]
 fn criterion_benchmark(c: &mut Criterion) {
-    bench("sha256", 17, c);
+    bench("sha256", 8, c);
     // bench("sha256", 20, c);
 }
 
 criterion_group!(benches, criterion_benchmark);
 criterion_main!(benches);
-*/
