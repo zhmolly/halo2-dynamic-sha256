@@ -8,15 +8,15 @@ description = "SHA256 verification circuit in halo2 supporting dynamic length in
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# halo2wrong = { git = "https://github.com/privacy-scaling-explorations/halo2wrong", version = "0.1.0", rev = "63bde545d934e69c806ef9bc8b18f03f6ec0fe8e" }
-# maingate = { git = "https://github.com/privacy-scaling-explorations/halo2wrong", version = "0.1.0", rev = "63bde545d934e69c806ef9bc8b18f03f6ec0fe8e" }
+halo2wrong = { git = "https://github.com/privacy-scaling-explorations/halo2wrong", tag = "v2022_09_09" }
+maingate = { git = "https://github.com/privacy-scaling-explorations/halo2wrong", tag = "v2022_09_09" }
 zkevm-circuits = { git = "https://github.com/SoraSuegami/zkevm-circuits.git", branch = "feat/dynamic_randomness" }
-halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2.git", tag = "v2022_09_10" }
+# halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2.git", tag = "v2022_10_22" }
 eth-types = { git = "https://github.com/SoraSuegami/zkevm-circuits.git", branch = "feat/dynamic_randomness" }
 # rand_xorshift = "0.3"
 rand = "0.8"
-num-bigint = { version = "0.4" }
-
+num-bigint = { version = "0.4", features = ["rand"] }
+sha2 = "0.10.6"
 [dev-dependencies]
 # criterion = "0.3"
 

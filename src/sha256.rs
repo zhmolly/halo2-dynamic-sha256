@@ -2,23 +2,342 @@
 // //!
 // //! [SHA-256]: https://tools.ietf.org/html/rfc6234
 use eth_types::Field;
-use halo2_proofs::{
+use halo2wrong::halo2::{
     circuit::{Layouter, Region, SimpleFloorPlanner, Value},
-    plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Expression, Fixed, VirtualCells},
+    plonk::{
+        Advice, Circuit, Column, ConstraintSystem, Error, Expression, Fixed, Selector, VirtualCells,
+    },
     poly::Rotation,
 };
+use maingate::{
+    big_to_fe, decompose_big, fe_to_big, AssignedValue, MainGate, MainGateConfig,
+    MainGateInstructions, RangeChip, RangeConfig, RangeInstructions, RegionCtx,
+};
+use sha2::{Digest, Sha256};
 use zkevm_circuits::sha256_circuit::sha256_bit::{Sha256BitChip, Sha256BitConfig};
+
+const BLOCK_BYTE: usize = 64;
+const DIGEST_SIZE: usize = 32;
 #[derive(Debug, Clone)]
 pub struct Sha256Config<F: Field> {
-    inner_config: Sha256BitConfig<F>,
-
-    max_size: usize,
+    sha256_bit_config: Sha256BitConfig<F>,
+    max_byte_size: usize,
+    q_enable: Selector,
+    q_first: Selector,
+    q_hash: Selector,
+    input_bytes: Column<Advice>,
+    input_byte_rlc: Column<Advice>,
+    length_acc: Column<Advice>,
+    hash_bytes: Column<Advice>,
+    hash_rlc: Column<Advice>,
+    is_actual: Column<Advice>,
+    // range_config: RangeConfig,
+    // main_gate_config: MainGateConfig,
 }
 
 #[derive(Debug, Clone)]
 pub struct Sha256Chip<F: Field> {
-    config: Sha256BitConfig<F>,
-    max_size: usize,
+    pub config: Sha256Config<F>,
+}
+
+impl<F: Field> Sha256Config<F> {
+    pub fn configure(
+        meta: &mut ConstraintSystem<F>,
+        sha256_bit_config: Sha256BitConfig<F>,
+        max_byte_size: usize,
+    ) -> Self {
+        let q_enable = meta.selector();
+        let q_first = meta.selector();
+        let q_hash = meta.selector();
+        let input_bytes = meta.advice_column();
+        let input_byte_rlc = meta.advice_column();
+        let length_acc = meta.advice_column();
+        let hash_bytes = meta.advice_column();
+        let hash_rlc = meta.advice_column();
+        let is_actual = meta.advice_column();
+        let randomness = sha256_bit_config.randomness;
+
+        meta.create_gate("input rlc check", |meta| {
+            let q_enable = meta.query_selector(q_enable);
+            let q_first = meta.query_selector(q_first);
+            let input_byte = meta.query_advice(input_bytes, Rotation::cur());
+            let input_byte_rlc_cur = meta.query_advice(input_byte_rlc, Rotation::cur());
+            let input_byte_rlc_prev = meta.query_advice(input_byte_rlc, Rotation::prev());
+            let r = meta.query_advice(randomness, Rotation::cur());
+            let is_actual = meta.query_advice(is_actual, Rotation::cur());
+            let rlc = input_byte_rlc_prev.clone() * r + input_byte.clone();
+            // 1. If q_first == true, input_byte_rlc_cur == input_byte
+            // 2. If q_enable == true, (if is_actual == true, input_byte_rlc_cur == input_byte_rlc_prev * r + input_byte, else input_byte_rlc_cur == input_byte_rlc_prev)
+            vec![
+                q_first * (input_byte_rlc_cur.clone() - input_byte),
+                q_enable
+                    * (is_actual.clone() * (input_byte_rlc_cur.clone() - rlc)
+                        + (Expression::Constant(F::one()) - is_actual)
+                            * (input_byte_rlc_cur - input_byte_rlc_prev)),
+            ]
+        });
+
+        meta.create_gate("check is_actual and length_acc", |meta| {
+            let q_enable = meta.query_selector(q_enable);
+            let q_first = meta.query_selector(q_first);
+            let is_actual_cur = meta.query_advice(is_actual, Rotation::cur());
+            let is_actual_prev = meta.query_advice(is_actual, Rotation::prev());
+            let is_actual_change_inv = is_actual_prev.clone() - is_actual_cur.clone();
+            let length_acc_cur = meta.query_advice(length_acc, Rotation::cur());
+            let length_acc_prev = meta.query_advice(length_acc, Rotation::prev());
+            let length_change = length_acc_cur.clone() - length_acc_prev.clone();
+            let one = Expression::Constant(F::one());
+            let not_q_first = one.clone() - q_first.clone();
+            vec![
+                q_first.clone() * (is_actual_cur.clone() - one.clone()), // If q_first==true, is_actual_cur == 1
+                q_first.clone() * (length_acc_cur.clone() - one.clone()), // If q_first==true, length_acc_cur == 1
+                not_q_first.clone() // If q_first==false, is_actual_change_inv is either 0 or 1. (is_actual_cur == is_actual_prev or is_actual_prev - is_actual_cur = 1)
+                    * is_actual_change_inv.clone()
+                    * (one.clone() - is_actual_change_inv.clone()),
+                not_q_first.clone()
+                    * q_enable.clone()
+                    * is_actual_cur.clone()
+                    * (length_change.clone() - one.clone()), // If q_first==false and q_enable==true and is_actual_cur == true, length_acc_cur - length_acc_prev == 1
+                not_q_first.clone()
+                    * q_enable.clone()
+                    * (one.clone() - is_actual_cur.clone())
+                    * length_change, // If q_first==false and q_enable==true and is_actual_cur == false, length_acc_cur - length_acc_prev == 0
+            ]
+        });
+
+        meta.create_gate("check hash bytes", |meta| {
+            let q_enable = meta.query_selector(q_enable);
+            let q_first = meta.query_selector(q_first);
+            let q_hash = meta.query_selector(q_hash);
+            let hash_byte = meta.query_advice(hash_bytes, Rotation::cur());
+            let hash_rlc_cur = meta.query_advice(hash_rlc, Rotation::cur());
+            let hash_rlc_prev = meta.query_advice(hash_rlc, Rotation::prev());
+            let r = meta.query_advice(randomness, Rotation::cur());
+            let rlc = hash_rlc_prev.clone() * r + hash_byte.clone();
+            // 1. If q_first == true, hash_rlc_cur == hash_byte
+            // 2. If q_enable == true, (if q_hash == true, hash_rlc_cur == hash_rlc_prev * r + hash_byte, else hash_rlc_cur == hash_rlc_prev)
+            vec![
+                q_first * (hash_rlc_cur.clone() - hash_byte),
+                q_enable
+                    * (q_hash.clone() * (hash_rlc_cur.clone() - rlc)
+                        + (Expression::Constant(F::one()) - q_hash)
+                            * (hash_rlc_cur - hash_rlc_prev)),
+            ]
+        });
+
+        meta.create_gate("hash table", |meta| {
+            let table = sha256_bit_config.hash_table.clone();
+            let is_enable_table = meta.query_advice(table.is_enabled, Rotation::cur());
+            let length_table = meta.query_advice(table.input_len, Rotation::cur());
+            let input_rlc_table = meta.query_advice(table.input_rlc, Rotation::cur());
+            let output_rlc_table = meta.query_advice(table.output_rlc, Rotation::cur());
+            let length_acc = meta.query_advice(length_acc, Rotation::cur());
+            let input_byte_rlc = meta.query_advice(input_byte_rlc, Rotation::cur());
+            let hash_rlc = meta.query_advice(hash_rlc, Rotation::cur());
+            vec![
+                is_enable_table.clone() * (length_table - length_acc),
+                is_enable_table.clone() * (input_rlc_table - input_byte_rlc),
+                is_enable_table.clone() * (output_rlc_table - hash_rlc),
+            ]
+        });
+
+        Self {
+            sha256_bit_config,
+            max_byte_size,
+            q_enable,
+            q_first,
+            q_hash,
+            input_bytes,
+            input_byte_rlc,
+            length_acc,
+            hash_bytes,
+            hash_rlc,
+            is_actual,
+        }
+    }
+
+    pub fn randomness_column(&self) -> Column<Advice> {
+        self.sha256_bit_config.randomness
+    }
+}
+
+impl<F: Field> Sha256Chip<F> {
+    pub fn new(
+        meta: &mut ConstraintSystem<F>,
+        sha256_bit_config: Sha256BitConfig<F>,
+        max_byte_size: usize,
+    ) -> Self {
+        assert_eq!(max_byte_size % BLOCK_BYTE, 0);
+        let config = Sha256Config::configure(meta, sha256_bit_config, max_byte_size);
+        Self { config }
+    }
+    pub fn sha256_bit(&self) -> Sha256BitChip<F> {
+        Sha256BitChip::new(
+            self.config.sha256_bit_config.clone(),
+            self.config.max_byte_size,
+        )
+    }
+
+    pub fn digest(
+        &self,
+        mut layouter: impl Layouter<F>,
+        inputs: &[u8],
+        r: F,
+    ) -> Result<
+        (
+            AssignedValue<F>,
+            Vec<AssignedValue<F>>,
+            Vec<AssignedValue<F>>,
+        ),
+        Error,
+    > {
+        let input_byte_size = inputs.len();
+        assert!(input_byte_size <= self.config.max_byte_size);
+        let sha256_bit_chip = self.sha256_bit();
+        let first_r = sha256_bit_chip.digest(layouter.namespace(|| "digest"), inputs, r)?;
+        let hash = Sha256::digest(inputs);
+        // let input_byte_size_with_9 = input_byte_size + 9;
+        // let one_round_size = BLOCK_BYTE;
+        // let num_round = if input_byte_size_with_9 % one_round_size == 0 {
+        //     input_byte_size_with_9 / one_round_size
+        // } else {
+        //     input_byte_size_with_9 / one_round_size + 1
+        // };
+        // let padded_size = one_round_size * num_round;
+        // let zero_padding_byte_size = padded_size - input_byte_size - 9;
+        // let max_byte_size = self.config.max_byte_size;
+        // let max_round = max_byte_size / one_round_size;
+        // let remaining_byte_size = max_byte_size - padded_size;
+        // assert_eq!(
+        //     remaining_byte_size,
+        //     one_round_size * (max_round - num_round)
+        // );
+
+        // let mut padded_inputs = inputs.to_vec();
+        // padded_inputs.push(0x80);
+        // for _ in 0..zero_padding_byte_size {
+        //     padded_inputs.push(0);
+        // }
+        // let mut input_len_bytes = [0; 8];
+        // let le_size_bytes = (8 * input_byte_size).to_le_bytes();
+        // input_len_bytes[0..le_size_bytes.len()].copy_from_slice(&le_size_bytes);
+        // for byte in input_len_bytes.iter().rev() {
+        //     padded_inputs.push(*byte);
+        // }
+        // assert_eq!(padded_inputs.len(), num_round * one_round_size);
+        // for _ in 0..remaining_byte_size {
+        //     padded_inputs.push(0);
+        // }
+        // assert_eq!(padded_inputs.len(), max_byte_size);
+
+        let (assigned_inputs, assigned_hash) = layouter.assign_region(
+            || "assign selectors",
+            |mut region| {
+                self.config.q_first.enable(&mut region, 0);
+                for idx in 0..self.config.max_byte_size {
+                    self.config.q_enable.enable(&mut region, idx);
+                }
+                for idx in 0..DIGEST_SIZE {
+                    self.config.q_hash.enable(&mut region, idx);
+                }
+
+                let assigned_inputs = inputs
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, byte)| {
+                        region.assign_advice(
+                            || format!("input byte at {}", idx),
+                            self.config.input_bytes,
+                            idx,
+                            || Value::known(F::from_u128(*byte as u128)),
+                        )
+                    })
+                    .collect::<Result<Vec<AssignedValue<F>>, Error>>()?;
+                region.assign_advice(
+                    || format!("input byte rlc at {}", 0),
+                    self.config.input_byte_rlc,
+                    0,
+                    || Value::known(F::from_u128(inputs[0] as u128)),
+                )?;
+                let mut input_rlc = F::from_u128(inputs[0] as u128);
+                for idx in 0..self.config.max_byte_size {
+                    region.assign_advice(
+                        || format!("input byte rlc at {}", idx),
+                        self.config.input_byte_rlc,
+                        idx,
+                        || Value::known(input_rlc.clone()),
+                    )?;
+                    if idx < input_byte_size - 1 {
+                        input_rlc = input_rlc * r + F::from_u128(inputs[idx + 1] as u128);
+                    }
+                }
+                let assigned_hash = hash
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, byte)| {
+                        region.assign_advice(
+                            || format!("hash byte at {}", idx),
+                            self.config.hash_bytes,
+                            idx,
+                            || Value::known(F::from_u128(*byte as u128)),
+                        )
+                    })
+                    .collect::<Result<Vec<AssignedValue<F>>, Error>>()?;
+                let mut hash_rlc = F::from_u128(hash[0] as u128);
+                for idx in 0..self.config.max_byte_size {
+                    region.assign_advice(
+                        || format!("hash byte rlc at {}", idx),
+                        self.config.hash_rlc,
+                        idx,
+                        || Value::known(hash_rlc.clone()),
+                    )?;
+                    if idx < DIGEST_SIZE - 1 {
+                        hash_rlc = hash_rlc * r + F::from_u128(hash[idx + 1] as u128);
+                    }
+                }
+
+                for idx in 0..self.config.max_byte_size {
+                    let (len_acc, is_actual) = if idx < input_byte_size {
+                        ((idx + 1) as u128, F::one())
+                    } else {
+                        (input_byte_size as u128, F::zero())
+                    };
+                    region.assign_advice(
+                        || format!("length acc at {}", idx),
+                        self.config.length_acc,
+                        idx,
+                        || Value::known(F::from_u128(len_acc)),
+                    )?;
+                    region.assign_advice(
+                        || format!("is_actual at {}", idx),
+                        self.config.is_actual,
+                        idx,
+                        || Value::known(is_actual),
+                    )?;
+                }
+                Ok((assigned_inputs, assigned_hash))
+            },
+        )?;
+
+        Ok((first_r, assigned_inputs, assigned_hash))
+    }
+
+    // fn is_less_than_u64(
+    //     &self,
+    //     ctx: &mut RegionCtx<F>,
+    //     a: &AssignedValue<F>,
+    //     b: &AssignedValue<F>,
+    // ) -> Result<AssignedValue<F>, Error> {
+    //     let main_gate = self.main_gate();
+    //     let inflated_a = main_gate.add_constant(ctx, a, F::from_u128(1 << 64))?;
+    //     let sub = main_gate.sub(ctx, &inflated_a, b)?;
+    //     let sub_bits = main_gate.to_bits(ctx, &sub, 65)?;
+    //     let is_overflow = main_gate.is_zero(ctx, &sub_bits[64])?;
+    //     let is_eq = main_gate.is_equal(ctx, a, b)?;
+    //     let is_not_eq = main_gate.not(ctx, &is_eq)?;
+    //     let is_less = main_gate.and(ctx, &is_overflow, &is_not_eq)?;
+    //     Ok(is_less)
+    // }
 }
 
 // use std::convert::TryInto;
