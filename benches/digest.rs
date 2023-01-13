@@ -90,11 +90,12 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
     }
 
     impl<F: Field> BenchCircuit<F> {
-        const MAX_BYTE_SIZE: usize = 128;
+        const MAX_BYTE_SIZE: usize = 64 + 64;
     }
 
     // Initialize the polynomial commitment parameters
-    let params_path = Path::new("./benches/sha256_params");
+    let params_name = format!("./benches/sha256_params_{}", k);
+    let params_path = Path::new(&params_name);
     if File::open(&params_path).is_err() {
         let params: ParamsKZG<Bn256> = ParamsKZG::new(k);
         let mut buf = Vec::new();
@@ -128,18 +129,25 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
     let vk = keygen_vk(&params, &circuit).expect("keygen_vk should not fail");
     let pk = keygen_pk(&params, vk, &circuit).expect("keygen_pk should not fail");
 
-    // let prover_name = name.to_string() + "-prover";
+    let prover_name = name.to_string() + "-prover";
     let verifier_name = name.to_string() + "-verifier";
 
-    // /// Benchmark proof creation
-    // c.bench_function(&prover_name, |b| {
-    //     b.iter(|| {
-    //         let mut transcript = Blake2bWrite::init(Fq::one());
-    //         create_proof(&params, &pk, &circuit, &[], &mut transcript)
-    //             .expect("proof generation should not fail");
-    //         let proof: Vec<u8> = transcript.finalize();
-    //     });
-    // });
+    // Benchmark proof creation
+    c.bench_function(&prover_name, |b| {
+        b.iter(|| {
+            let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
+            create_proof::<KZGCommitmentScheme<_>, ProverGWC<_>, _, _, _, _>(
+                &params,
+                &pk,
+                &[circuit.clone()],
+                &[&[&[r], &output]],
+                OsRng,
+                &mut transcript,
+            )
+            .expect("proof generation should not fail");
+            let _: Vec<u8> = transcript.finalize();
+        });
+    });
 
     // Create a proof
     let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
