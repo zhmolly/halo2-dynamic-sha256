@@ -231,7 +231,7 @@ impl<F: Field> Sha256DynamicChip<F> {
 
     pub fn digest(
         &self,
-        mut region: Region<'_, F>,
+        mut layouter: impl Layouter<F>,
         input: &[u8],
     ) -> Result<
         (
@@ -247,125 +247,144 @@ impl<F: Field> Sha256DynamicChip<F> {
         let range_chip = self.range_chip();
         let sha256_bit_chip = self.sha256_bit();
         let hash = Sha256::digest(input);
-        let assigned_rows = sha256_bit_chip.digest(&mut region, input)?;
-        let ctx = &mut RegionCtx::new(region, 0);
+        let assigned_rows = layouter.assign_region(
+            || "assigned_rows",
+            |mut region| sha256_bit_chip.digest(&mut region, input),
+        )?;
+        let (sum_input_len, assigned_input, sum_hash_bytes) = layouter.assign_region(
+            || "assign outputs",
+            |mut region| {
+                let ctx = &mut RegionCtx::new(region, 0);
 
-        let input_byte_size_with_9 = input_byte_size + 9;
-        let one_round_size = BLOCK_BYTE;
-        let num_round = if input_byte_size_with_9 % one_round_size == 0 {
-            input_byte_size_with_9 / one_round_size
-        } else {
-            input_byte_size_with_9 / one_round_size + 1
-        };
-        let padded_size = one_round_size * num_round;
-        let zero_padding_byte_size = padded_size - input_byte_size - 9;
-        let max_byte_size = self.config.max_byte_size;
-        let max_round = max_byte_size / one_round_size;
-        let remaining_byte_size = max_byte_size - padded_size;
-        assert_eq!(
-            remaining_byte_size,
-            one_round_size * (max_round - num_round)
-        );
+                let input_byte_size_with_9 = input_byte_size + 9;
+                let one_round_size = BLOCK_BYTE;
+                let num_round = if input_byte_size_with_9 % one_round_size == 0 {
+                    input_byte_size_with_9 / one_round_size
+                } else {
+                    input_byte_size_with_9 / one_round_size + 1
+                };
+                let padded_size = one_round_size * num_round;
+                let zero_padding_byte_size = padded_size - input_byte_size - 9;
+                let max_byte_size = self.config.max_byte_size;
+                let max_round = max_byte_size / one_round_size;
+                let remaining_byte_size = max_byte_size - padded_size;
+                assert_eq!(
+                    remaining_byte_size,
+                    one_round_size * (max_round - num_round)
+                );
 
-        // let mut padded_inputs = input.to_vec();
-        // padded_inputs.push(0x80);
-        // for _ in 0..zero_padding_byte_size {
-        //     padded_inputs.push(0);
-        // }
-        // let mut input_len_bytes = [0; 8];
-        // let le_size_bytes = (8 * input_byte_size).to_le_bytes();
-        // input_len_bytes[0..le_size_bytes.len()].copy_from_slice(&le_size_bytes);
-        // for byte in input_len_bytes.iter().rev() {
-        //     padded_inputs.push(*byte);
-        // }
-        // assert_eq!(padded_inputs.len(), num_round * one_round_size);
-        // for _ in 0..remaining_byte_size {
-        //     padded_inputs.push(0);
-        // }
-        // assert_eq!(padded_inputs.len(), max_byte_size);
+                // let mut padded_inputs = input.to_vec();
+                // padded_inputs.push(0x80);
+                // for _ in 0..zero_padding_byte_size {
+                //     padded_inputs.push(0);
+                // }
+                // let mut input_len_bytes = [0; 8];
+                // let le_size_bytes = (8 * input_byte_size).to_le_bytes();
+                // input_len_bytes[0..le_size_bytes.len()].copy_from_slice(&le_size_bytes);
+                // for byte in input_len_bytes.iter().rev() {
+                //     padded_inputs.push(*byte);
+                // }
+                // assert_eq!(padded_inputs.len(), num_round * one_round_size);
+                // for _ in 0..remaining_byte_size {
+                //     padded_inputs.push(0);
+                // }
+                // assert_eq!(padded_inputs.len(), max_byte_size);
 
-        let zero = main_gate.assign_constant(ctx, F::zero())?;
+                let zero = main_gate.assign_constant(ctx, F::zero())?;
 
-        let mut assigned_input = vec![];
-        for byte in input.iter() {
-            assigned_input.push(range_chip.assign(
-                ctx,
-                Value::known(F::from(*byte as u64)),
-                8 / Self::NUM_LOOKUP_TABLES,
-                8,
-            )?);
-        }
-        assigned_input.push(main_gate.assign_constant(ctx, F::from(0x80))?);
-        for _ in 0..zero_padding_byte_size {
-            assigned_input.push(zero.clone());
-        }
-        let mut input_len_bytes = [0; 8];
-        let le_size_bytes = (8 * input_byte_size).to_le_bytes();
-        input_len_bytes[0..le_size_bytes.len()].copy_from_slice(&le_size_bytes);
-        for byte in input_len_bytes.iter().rev() {
-            assigned_input.push(main_gate.assign_value(ctx, Value::known(F::from(*byte as u64)))?);
-        }
-        assert_eq!(assigned_input.len(), num_round * one_round_size);
-        for _ in 0..remaining_byte_size {
-            assigned_input.push(zero.clone());
-        }
-        assert_eq!(assigned_input.len(), max_byte_size);
-
-        let mut sum_input_len = zero.clone();
-        let mut sum_hash_bytes = vec![zero.clone(); 32];
-        for round_idx in 0..max_round {
-            let input_len = &assigned_rows.input_len[round_idx];
-            let input_words =
-                assigned_rows.input_words[16 * round_idx..16 * (round_idx + 1)].to_vec();
-            let is_output_enabled = &assigned_rows.is_output_enabled[round_idx];
-            let output_words =
-                assigned_rows.output_words[4 * round_idx..4 * round_idx + 4].to_vec();
-            //let is_dummy = &assigned_rows.is_dummy[round_idx];
-
-            sum_input_len = {
-                let muled = main_gate.mul(ctx, &is_output_enabled, &input_len)?;
-                main_gate.add(ctx, &sum_input_len, &muled)?
-            };
-
-            for word_idx in 0..16 {
-                let offset_in = 64 * round_idx + 4 * word_idx;
-                let assigned_input_u32 = assigned_input[offset_in + 0..offset_in + 4].to_vec();
-                let mut sum = zero.clone();
-                for (idx, assigned_byte) in assigned_input_u32.iter().enumerate() {
-                    let coeff = main_gate.assign_constant(ctx, F::from_u128(1u128 << (8 * idx)))?;
-                    let mul = main_gate.mul(ctx, assigned_byte, &coeff)?;
-                    sum = main_gate.add(ctx, &sum, &mul)?;
+                let mut assigned_input = vec![];
+                for byte in input.iter() {
+                    assigned_input.push(range_chip.assign(
+                        ctx,
+                        Value::known(F::from(*byte as u64)),
+                        8 / Self::NUM_LOOKUP_TABLES,
+                        8,
+                    )?);
                 }
-                main_gate.assert_equal(ctx, &sum, &input_words[word_idx])?;
-            }
+                assigned_input.push(main_gate.assign_constant(ctx, F::from(0x80))?);
+                for _ in 0..zero_padding_byte_size {
+                    assigned_input.push(zero.clone());
+                }
+                let mut input_len_bytes = [0; 8];
+                let le_size_bytes = (8 * input_byte_size).to_le_bytes();
+                input_len_bytes[0..le_size_bytes.len()].copy_from_slice(&le_size_bytes);
+                for byte in input_len_bytes.iter().rev() {
+                    assigned_input
+                        .push(main_gate.assign_value(ctx, Value::known(F::from(*byte as u64)))?);
+                }
+                assert_eq!(assigned_input.len(), num_round * one_round_size);
+                for _ in 0..remaining_byte_size {
+                    assigned_input.push(zero.clone());
+                }
+                assert_eq!(assigned_input.len(), max_byte_size);
 
-            for word_idx in 0..4 {
-                let hash_bytes_val = (0..8)
-                    .map(|idx| {
-                        output_words[word_idx]
-                            .value()
-                            .map(|v| (v.get_lower_128() >> (8 * idx)) & ((1u128 << 8) - 1u128))
-                            .map(|v| F::from_u128(v))
-                    })
-                    .collect::<Vec<Value<F>>>();
-                let assigned_hash_bytes = hash_bytes_val
-                    .iter()
-                    .map(|v| range_chip.assign(ctx, *v, 8 / Self::NUM_LOOKUP_TABLES, 8))
-                    .collect::<Result<Vec<AssignedValue<F>>, Error>>()?;
-                let mut sum = zero.clone();
-                for (idx, assigned_byte) in assigned_hash_bytes.iter().enumerate() {
-                    let coeff = main_gate.assign_constant(ctx, F::from(1 << (8 * idx)))?;
-                    let mul = main_gate.mul(ctx, assigned_byte, &coeff)?;
-                    sum = main_gate.add(ctx, &sum, &mul)?;
+                let mut sum_input_len = zero.clone();
+                let mut sum_hash_bytes = vec![zero.clone(); 32];
+                for round_idx in 0..max_round {
+                    let input_len = &assigned_rows.input_len[round_idx];
+                    let input_words =
+                        assigned_rows.input_words[16 * round_idx..16 * (round_idx + 1)].to_vec();
+                    let is_output_enabled = &assigned_rows.is_output_enabled[round_idx];
+                    let output_words =
+                        assigned_rows.output_words[4 * round_idx..4 * round_idx + 4].to_vec();
+                    //let is_dummy = &assigned_rows.is_dummy[round_idx];
+
+                    sum_input_len = {
+                        let muled = main_gate.mul(ctx, &is_output_enabled, &input_len)?;
+                        main_gate.add(ctx, &sum_input_len, &muled)?
+                    };
+
+                    for word_idx in 0..16 {
+                        let offset_in = 64 * round_idx + 4 * word_idx;
+                        let assigned_input_u32 =
+                            assigned_input[offset_in + 0..offset_in + 4].to_vec();
+                        let mut sum = zero.clone();
+                        for (idx, assigned_byte) in assigned_input_u32.iter().enumerate() {
+                            let coeff =
+                                main_gate.assign_constant(ctx, F::from_u128(1u128 << (8 * idx)))?;
+                            let mul = main_gate.mul(ctx, assigned_byte, &coeff)?;
+                            sum = main_gate.add(ctx, &sum, &mul)?;
+                        }
+                        main_gate.assert_equal(ctx, &sum, &input_words[word_idx])?;
+                    }
+
+                    for word_idx in 0..4 {
+                        let hash_bytes_val = (0..8)
+                            .map(|idx| {
+                                output_words[word_idx]
+                                    .value()
+                                    .map(|v| {
+                                        (v.get_lower_128() >> (8 * idx)) & ((1u128 << 8) - 1u128)
+                                    })
+                                    .map(|v| F::from_u128(v))
+                            })
+                            .collect::<Vec<Value<F>>>();
+                        let assigned_hash_bytes = hash_bytes_val
+                            .iter()
+                            .map(|v| range_chip.assign(ctx, *v, 8 / Self::NUM_LOOKUP_TABLES, 8))
+                            .collect::<Result<Vec<AssignedValue<F>>, Error>>()?;
+                        let mut sum = zero.clone();
+                        for (idx, assigned_byte) in assigned_hash_bytes.iter().enumerate() {
+                            let coeff = main_gate.assign_constant(ctx, F::from(1 << (8 * idx)))?;
+                            let mul = main_gate.mul(ctx, assigned_byte, &coeff)?;
+                            sum = main_gate.add(ctx, &sum, &mul)?;
+                        }
+                        main_gate.assert_equal(ctx, &sum, &output_words[word_idx])?;
+                        for idx in 0..8 {
+                            let mul = main_gate.mul(
+                                ctx,
+                                &is_output_enabled,
+                                &assigned_hash_bytes[idx],
+                            )?;
+                            sum_hash_bytes[8 * word_idx + idx] =
+                                main_gate.add(ctx, &sum_hash_bytes[8 * word_idx + idx], &mul)?;
+                        }
+                    }
                 }
-                main_gate.assert_equal(ctx, &sum, &output_words[word_idx])?;
-                for idx in 0..8 {
-                    let mul = main_gate.mul(ctx, &is_output_enabled, &assigned_hash_bytes[idx])?;
-                    sum_hash_bytes[8 * word_idx + idx] =
-                        main_gate.add(ctx, &sum_hash_bytes[8 * word_idx + idx], &mul)?;
-                }
-            }
-        }
+                Ok((sum_input_len, assigned_input, sum_hash_bytes))
+            },
+        )?;
+
         Ok((sum_input_len, assigned_input, sum_hash_bytes))
 
         // let first_r = sha256_bit_chip.digest(region, inputs, r)?;
@@ -573,9 +592,9 @@ mod test {
             let sha256_chip = Sha256DynamicChip::new(config.sha256_config.clone());
             let range_chip = sha256_chip.range_chip();
             range_chip.load_table(&mut layouter)?;
-            let (_, _, assigned_hash) = layouter.assign_region(
-                || "sha256_dynamic_chip",
-                |region| sha256_chip.digest(region, &self.test_input),
+            let (_, _, assigned_hash) = sha256_chip.digest(
+                layouter.namespace(|| "sha256_dynamic_chip"),
+                &self.test_input,
             )?;
             let maingate = sha256_chip.main_gate();
             for (idx, cell) in assigned_hash.into_iter().enumerate() {

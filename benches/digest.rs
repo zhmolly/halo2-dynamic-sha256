@@ -72,9 +72,9 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
             let sha256_chip = Sha256DynamicChip::new(config.sha256_config.clone());
             let range_chip = sha256_chip.range_chip();
             range_chip.load_table(&mut layouter)?;
-            let (_, _, assigned_hash) = layouter.assign_region(
-                || "sha256_chip",
-                |region| sha256_chip.digest(region, &self.test_input),
+            let (_, _, assigned_hash) = sha256_chip.digest(
+                layouter.namespace(|| "sha256_dynamic_chip"),
+                &self.test_input,
             )?;
             let maingate = sha256_chip.main_gate();
             for (idx, cell) in assigned_hash.into_iter().enumerate() {
