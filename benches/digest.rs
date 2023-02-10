@@ -14,6 +14,10 @@ use halo2wrong::halo2::{
     poly::commitment::Params,
     transcript::{Blake2bRead, Blake2bWrite, Challenge255},
 };
+use maingate::{
+    big_to_fe, decompose_big, fe_to_big, AssignedValue, MainGate, MainGateConfig,
+    MainGateInstructions, RangeChip, RangeConfig, RangeInstructions, RegionCtx,
+};
 use rand::rngs::OsRng;
 use rand::{thread_rng, Rng};
 
@@ -28,7 +32,7 @@ use std::marker::PhantomData;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use halo2_dynamic_sha256::{Field, Sha256Chip, Sha256Config};
+use halo2_dynamic_sha256::{Field, Sha256DynamicChip, Sha256DynamicConfig};
 
 use halo2wrong::halo2::{
     poly::commitment::ParamsProver,
@@ -38,15 +42,12 @@ use halo2wrong::halo2::{
 fn bench(name: &str, k: u32, c: &mut Criterion) {
     #[derive(Debug, Clone)]
     struct BenchConfig<F: Field> {
-        sha256_config: Sha256Config<F>,
-        r_instance: Column<Instance>,
-        hash_instance: Column<Instance>,
+        sha256_config: Sha256DynamicConfig<F>,
     }
 
     #[derive(Debug, Clone)]
     struct BenchCircuit<F: Field> {
         test_input: Vec<u8>,
-        r: F,
         _f: PhantomData<F>,
     }
 
@@ -59,16 +60,8 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
         }
 
         fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
-            let sha256_config = Sha256Config::configure(meta, Self::MAX_BYTE_SIZE);
-            let r_instance = meta.instance_column();
-            meta.enable_equality(r_instance);
-            let hash_instance = meta.instance_column();
-            meta.enable_equality(hash_instance);
-            Self::Config {
-                sha256_config,
-                r_instance,
-                hash_instance,
-            }
+            let sha256_config = Sha256DynamicChip::configure(meta, Self::MAX_BYTE_SIZE);
+            Self::Config { sha256_config }
         }
 
         fn synthesize(
@@ -76,21 +69,23 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
             config: Self::Config,
             mut layouter: impl Layouter<F>,
         ) -> Result<(), Error> {
-            let sha256_chip = Sha256Chip::new(config.sha256_config.clone());
-            let (assigned_r, assigned_input, assigned_hash) = layouter.assign_region(
+            let sha256_chip = Sha256DynamicChip::new(config.sha256_config.clone());
+            let range_chip = sha256_chip.range_chip();
+            range_chip.load_table(&mut layouter)?;
+            let (_, _, assigned_hash) = layouter.assign_region(
                 || "sha256_chip",
-                |mut region| sha256_chip.digest(&mut region, &self.test_input, self.r),
+                |region| sha256_chip.digest(region, &self.test_input),
             )?;
-            layouter.constrain_instance(assigned_r.cell(), config.r_instance, 0)?;
-            for (idx, cell) in assigned_hash.into_iter().rev().enumerate() {
-                layouter.constrain_instance(cell.cell(), config.hash_instance, idx)?;
+            let maingate = sha256_chip.main_gate();
+            for (idx, cell) in assigned_hash.into_iter().enumerate() {
+                maingate.expose_public(layouter.namespace(|| "publish hash"), cell, idx)?;
             }
             Ok(())
         }
     }
 
     impl<F: Field> BenchCircuit<F> {
-        const MAX_BYTE_SIZE: usize = 64 + 64;
+        const MAX_BYTE_SIZE: usize = 128;
     }
 
     // Initialize the polynomial commitment parameters
@@ -110,8 +105,6 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
     let params_fs = File::open(&params_path).expect("couldn't load sha256_params");
     let params: ParamsKZG<Bn256> =
         ParamsKZG::read::<_>(&mut BufReader::new(params_fs)).expect("Failed to read params");
-    let rng = thread_rng();
-    let r = <Fr as halo2wrong::halo2::arithmetic::Field>::random(rng);
 
     let test_input = vec![0; 60];
     let output = Sha256::digest(&test_input);
@@ -121,7 +114,6 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
         .collect::<Vec<Fr>>();
     let circuit = BenchCircuit {
         test_input: test_input.clone(),
-        r,
         _f: PhantomData,
     };
 
@@ -140,7 +132,7 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
                 &params,
                 &pk,
                 &[circuit.clone()],
-                &[&[&[r], &output]],
+                &[&[&output]],
                 OsRng,
                 &mut transcript,
             )
@@ -150,36 +142,36 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
     });
 
     // Create a proof
-    let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
-    create_proof::<KZGCommitmentScheme<_>, ProverGWC<_>, _, _, _, _>(
-        &params,
-        &pk,
-        &[circuit],
-        &[&[&[r], &output]],
-        OsRng,
-        &mut transcript,
-    )
-    .expect("proof generation should not fail");
-    let proof: Vec<u8> = transcript.finalize();
+    // let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
+    // create_proof::<KZGCommitmentScheme<_>, ProverGWC<_>, _, _, _, _>(
+    //     &params,
+    //     &pk,
+    //     &[circuit],
+    //     &[&[&output]],
+    //     OsRng,
+    //     &mut transcript,
+    // )
+    // .expect("proof generation should not fail");
+    // let proof: Vec<u8> = transcript.finalize();
 
-    c.bench_function(&verifier_name, |b| {
-        b.iter(|| {
-            let strategy = SingleStrategy::new(&params);
-            let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
-            assert!(verify_proof::<_, VerifierGWC<_>, _, _, _>(
-                &params,
-                pk.get_vk(),
-                strategy,
-                &[&[&[r], &output]],
-                &mut transcript
-            )
-            .is_ok());
-        });
-    });
+    // c.bench_function(&verifier_name, |b| {
+    //     b.iter(|| {
+    //         let strategy = SingleStrategy::new(&params);
+    //         let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
+    //         assert!(verify_proof::<_, VerifierGWC<_>, _, _, _>(
+    //             &params,
+    //             pk.get_vk(),
+    //             strategy,
+    //             &[&[&output]],
+    //             &mut transcript
+    //         )
+    //         .is_ok());
+    //     });
+    // });
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    bench("sha256", 8, c);
+    bench("sha256", 10, c);
     // bench("sha256", 20, c);
 }
 
