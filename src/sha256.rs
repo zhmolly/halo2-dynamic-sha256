@@ -290,8 +290,6 @@ impl<F: Field> Sha256DynamicChip<F> {
                 // }
                 // assert_eq!(padded_inputs.len(), max_byte_size);
 
-                let zero = main_gate.assign_constant(ctx, F::zero())?;
-
                 let mut assigned_input = vec![];
                 for byte in input.iter() {
                     assigned_input.push(range_chip.assign(
@@ -301,9 +299,9 @@ impl<F: Field> Sha256DynamicChip<F> {
                         8,
                     )?);
                 }
-                assigned_input.push(main_gate.assign_constant(ctx, F::from(0x80))?);
+                assigned_input.push(main_gate.assign_value(ctx, Value::known(F::from(0x80)))?);
                 for _ in 0..zero_padding_byte_size {
-                    assigned_input.push(zero.clone());
+                    assigned_input.push(main_gate.assign_value(ctx, Value::known(F::zero()))?);
                 }
                 let mut input_len_bytes = [0; 8];
                 let le_size_bytes = (8 * input_byte_size).to_le_bytes();
@@ -314,10 +312,11 @@ impl<F: Field> Sha256DynamicChip<F> {
                 }
                 assert_eq!(assigned_input.len(), num_round * one_round_size);
                 for _ in 0..remaining_byte_size {
-                    assigned_input.push(zero.clone());
+                    assigned_input.push(main_gate.assign_value(ctx, Value::known(F::zero()))?);
                 }
                 assert_eq!(assigned_input.len(), max_byte_size);
 
+                let zero = main_gate.assign_constant(ctx, F::zero())?;
                 let mut sum_input_len = zero.clone();
                 let mut sum_hash_bytes = vec![zero.clone(); 32];
                 for round_idx in 0..max_round {
@@ -655,7 +654,6 @@ mod test {
         let k = 10;
 
         let rng = thread_rng();
-        let r = <Fr as halo2wrong::halo2::arithmetic::Field>::random(rng);
 
         // Test vector: "0x0"
         let test_input = vec![0u8];
@@ -678,7 +676,7 @@ mod test {
 
     #[test]
     fn test_sha256_correct3() {
-        let k = 10;
+        let k = 11;
 
         let test_input = vec![0x1; 60];
 
