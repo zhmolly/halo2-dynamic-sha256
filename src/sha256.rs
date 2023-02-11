@@ -5,7 +5,8 @@ use eth_types::Field;
 use halo2wrong::halo2::{
     circuit::{Layouter, Region, SimpleFloorPlanner, Value},
     plonk::{
-        Advice, Circuit, Column, ConstraintSystem, Error, Expression, Fixed, Selector, VirtualCells,
+        Advice, Circuit, Column, ConstraintSystem, Error, Expression, Fixed, Selector, TableColumn,
+        VirtualCells,
     },
     poly::Rotation,
 };
@@ -24,154 +25,15 @@ pub struct Sha256DynamicConfig<F: Field> {
     sha256_bit_config: Sha256BitConfig<F>,
     max_byte_size: usize,
     main_gate_config: MainGateConfig,
-    range_config: RangeConfig,
-    // q_enable: Column<Fixed>,
-    // q_first: Column<Fixed>,
-    // q_input_word: Column<Fixed>,
-    // q_hash: Column<Fixed>,
-    // input_bytes: Column<Advice>,
-    // length_acc: Column<Advice>,
-    // hash_bytes: Column<Advice>,
-    // is_actual: Column<Advice>,
+    //range_config: RangeConfig,
+    pub bytes: Column<Advice>,
+    pub table_bytes: TableColumn,
+    pub sel_bytes: Selector,
 }
 
 #[derive(Debug, Clone)]
 pub struct Sha256DynamicChip<F: Field> {
     pub config: Sha256DynamicConfig<F>,
-}
-
-impl<F: Field> Sha256DynamicConfig<F> {
-    pub fn new(
-        main_gate_config: MainGateConfig,
-        range_config: RangeConfig,
-        sha256_bit_config: Sha256BitConfig<F>,
-        max_byte_size: usize,
-    ) -> Self {
-        Self {
-            main_gate_config,
-            range_config,
-            sha256_bit_config,
-            max_byte_size,
-        }
-    }
-
-    // pub fn configure(meta: &mut ConstraintSystem<F>, max_byte_size: usize) -> Self {
-    //     assert_eq!(max_byte_size % BLOCK_BYTE, 0);
-    //     let sha256_bit_config = Sha256BitConfig::<F>::configure(meta);
-    //     let q_enable = meta.fixed_column();
-    //     let q_first = meta.fixed_column();
-    //     let q_hash = meta.fixed_column();
-    //     let input_bytes = meta.advice_column();
-    //     meta.enable_equality(input_bytes);
-    //     let length_acc = meta.advice_column();
-    //     let hash_bytes = meta.advice_column();
-    //     meta.enable_equality(hash_bytes);
-    //     let is_actual = meta.advice_column();
-
-    //     // meta.create_gate("input rlc check", |meta| {
-    //     //     let q_enable = meta.query_fixed(q_enable, Rotation::cur());
-    //     //     let q_first = meta.query_fixed(q_first, Rotation::cur());
-    //     //     let input_byte = meta.query_advice(input_bytes, Rotation::cur());
-    //     //     let is_actual = meta.query_advice(is_actual, Rotation::cur());
-    //     //     let one = Expression::Constant(F::one());
-    //     //     // 1. If q_first == true, input_byte_rlc_cur == input_byte
-    //     //     // 2. If q_first == false and q_enable == true, (if is_actual == true, input_byte_rlc_cur == input_byte_rlc_prev * r + input_byte, else input_byte_rlc_cur == input_byte_rlc_prev)
-    //     //     vec![
-    //     //         q_first.clone() * (input_byte_rlc_cur.clone() - input_byte.clone()),
-    //     //         q_enable
-    //     //             * (one.clone() - q_first)
-    //     //             * (is_actual.clone()
-    //     //                 * (input_byte_rlc_cur.clone()
-    //     //                     - input_byte_rlc_prev.clone() * r
-    //     //                     - input_byte.clone())
-    //     //                 + (one - is_actual) * (input_byte_rlc_cur - input_byte_rlc_prev)),
-    //     //     ]
-    //     // });
-    //     meta.create_gate("input words check", |meta| {
-    //         let q_enable = meta.query_fixed(q_enable, Rotation::cur());
-    //         let q_first = meta.query_fixed(q_first, Rotation::cur());
-    //         let input_byte = meta.query_advice(input_bytes, Rotation::cur());
-    //         let is_actual = meta.query_advice(is_actual, Rotation::cur());
-    //         let one = Expression::Constant(F::one());
-    //     });
-
-    //     meta.create_gate("check is_actual and length_acc", |meta| {
-    //         let q_enable = meta.query_fixed(q_enable, Rotation::cur());
-    //         let q_first = meta.query_fixed(q_first, Rotation::cur());
-    //         let is_actual_cur = meta.query_advice(is_actual, Rotation::cur());
-    //         let is_actual_prev = meta.query_advice(is_actual, Rotation::prev());
-    //         let is_actual_change_inv = is_actual_prev.clone() - is_actual_cur.clone();
-    //         let length_acc_cur = meta.query_advice(length_acc, Rotation::cur());
-    //         let length_acc_prev = meta.query_advice(length_acc, Rotation::prev());
-    //         let length_change = length_acc_cur.clone() - length_acc_prev.clone();
-    //         let one = Expression::Constant(F::one());
-    //         let not_q_first = one.clone() - q_first.clone();
-    //         vec![
-    //             q_first.clone() * (is_actual_cur.clone() - one.clone()), // If q_first==true, is_actual_cur == 1
-    //             q_first.clone() * (length_acc_cur.clone() - one.clone()), // If q_first==true, length_acc_cur == 1
-    //             not_q_first.clone() // If q_first==false, is_actual_change_inv is either 0 or 1. (is_actual_cur == is_actual_prev or is_actual_prev - is_actual_cur = 1)
-    //                 * q_enable.clone()
-    //                 * is_actual_change_inv.clone()
-    //                 * (one.clone() - is_actual_change_inv.clone()),
-    //             not_q_first.clone()
-    //                 * q_enable.clone()
-    //                 * is_actual_cur.clone()
-    //                 * (length_change.clone() - one.clone()), // If q_first==false and q_enable==true and is_actual_cur == true, length_acc_cur - length_acc_prev == 1
-    //             not_q_first.clone()
-    //                 * q_enable.clone()
-    //                 * (one.clone() - is_actual_cur.clone())
-    //                 * length_change, // If q_first==false and q_enable==true and is_actual_cur == false, length_acc_cur - length_acc_prev == 0
-    //         ]
-    //     });
-
-    //     meta.create_gate("check hash bytes", |meta| {
-    //         let q_enable = meta.query_fixed(q_enable, Rotation::cur());
-    //         let q_first = meta.query_fixed(q_first, Rotation::cur());
-    //         let q_hash = meta.query_fixed(q_hash, Rotation::cur());
-    //         let hash_bytes = meta.query_advice(hash_bytes, Rotation::cur());
-    //         let one = Expression::Constant(F::one());
-    //         // 1. If q_first == true, hash_rlc_cur == hash_words
-    //         // 2. If q_first == false and q_enable == true, (if q_hash == true, hash_rlc_cur == hash_rlc_prev * r + hash_words, else hash_rlc_cur == hash_rlc_prev)
-    //         vec![
-    //             q_first.clone() * (hash_rlc_cur.clone() - hash_bytes),
-    //             q_enable
-    //                 * (one.clone() - q_first)
-    //                 * (q_hash.clone() * (hash_rlc_cur.clone() - rlc)
-    //                     + (one - q_hash) * (hash_rlc_cur - hash_rlc_prev)),
-    //         ]
-    //     });
-
-    //     meta.create_gate("hash table", |meta| {
-    //         let table = sha256_bit_config.hash_table.clone();
-    //         let is_enable_table = meta.query_advice(table.is_enabled, Rotation::cur());
-    //         let length_table = meta.query_advice(table.input_len, Rotation::cur());
-    //         let input_rlc_table = meta.query_advice(table.input_rlc, Rotation::cur());
-    //         let output_rlc_table = meta.query_advice(table.output_rlc, Rotation::cur());
-    //         let q_enable = meta.query_fixed(q_enable, Rotation::cur());
-    //         let length_acc = meta.query_advice(length_acc, Rotation::cur());
-    //         let input_byte_rlc = meta.query_advice(input_byte_rlc, Rotation::cur());
-    //         let hash_rlc = meta.query_advice(hash_rlc, Rotation::cur());
-    //         vec![
-    //             q_enable.clone() * is_enable_table.clone() * (length_table - length_acc),
-    //             q_enable.clone() * is_enable_table.clone() * (input_rlc_table - input_byte_rlc),
-    //             q_enable.clone() * is_enable_table.clone() * (output_rlc_table - hash_rlc),
-    //         ]
-    //     });
-
-    //     Self {
-    //         sha256_bit_config,
-    //         max_byte_size,
-    //         q_enable,
-    //         q_first,
-    //         q_hash,
-    //         input_bytes,
-    //         input_byte_rlc,
-    //         length_acc,
-    //         hash_bytes,
-    //         hash_rlc,
-    //         is_actual,
-    //     }
-    // }
 }
 
 impl<F: Field> Sha256DynamicChip<F> {
@@ -181,41 +43,88 @@ impl<F: Field> Sha256DynamicChip<F> {
         Self { config }
     }
 
-    pub fn compute_range_lens() -> (Vec<usize>, Vec<usize>) {
-        let composition_bit_lens = vec![
-            8 / Self::NUM_LOOKUP_TABLES,
-            32 / Self::NUM_LOOKUP_TABLES,
-            64 / Self::NUM_LOOKUP_TABLES,
-        ];
-        (composition_bit_lens, vec![])
-    }
-
     pub fn configure(
         meta: &mut ConstraintSystem<F>,
+        main_gate_config: MainGateConfig,
+        sha256_bit_config: Sha256BitConfig<F>,
         max_byte_size: usize,
     ) -> Sha256DynamicConfig<F> {
-        let main_gate_config = MainGate::configure(meta);
+        let bytes = meta.advice_column();
+        meta.enable_equality(bytes);
+        let table_bytes = meta.lookup_table_column();
+        let sel_bytes = meta.complex_selector();
 
-        let (composition_bit_lens, overflow_bit_lens) = Self::compute_range_lens();
-        let range_config = RangeChip::configure(
-            meta,
-            &main_gate_config,
-            composition_bit_lens,
-            overflow_bit_lens,
-        );
-        let sha256_bit_config = Sha256BitConfig::configure(meta);
-        Sha256DynamicConfig::new(
+        meta.lookup("bytes lookup", |meta| {
+            let bytes = meta.query_advice(bytes, Rotation::cur());
+            let sel = meta.query_selector(sel_bytes);
+            vec![(sel * bytes, table_bytes)]
+        });
+
+        Sha256DynamicConfig::<F> {
             main_gate_config,
-            range_config,
             sha256_bit_config,
             max_byte_size,
+            bytes,
+            table_bytes,
+            sel_bytes,
+        }
+    }
+
+    pub fn load(
+        config: &Sha256DynamicConfig<F>,
+        layouter: &mut impl Layouter<F>,
+    ) -> Result<(), Error> {
+        layouter.assign_table(
+            || "bytes table",
+            |mut table| {
+                for index in 0..256 {
+                    table.assign_cell(
+                        || "table_bytes",
+                        config.table_bytes,
+                        index,
+                        || Value::known(F::from(index as u64)),
+                    )?;
+                }
+                Ok(())
+            },
         )
     }
 
-    /// Getter for [`RangeChip`].
-    pub fn range_chip(&self) -> RangeChip<F> {
-        RangeChip::<F>::new(self.config.range_config.clone())
-    }
+    // pub fn compute_range_lens() -> (Vec<usize>, Vec<usize>) {
+    //     let composition_bit_lens = vec![
+    //         8 / Self::NUM_LOOKUP_TABLES,
+    //         32 / Self::NUM_LOOKUP_TABLES,
+    //         64 / Self::NUM_LOOKUP_TABLES,
+    //     ];
+    //     (composition_bit_lens, vec![])
+    // }
+
+    // pub fn configure(
+    //     meta: &mut ConstraintSystem<F>,
+    //     max_byte_size: usize,
+    // ) -> Sha256DynamicConfig<F> {
+    //     let main_gate_config = MainGate::configure(meta);
+
+    //     let (composition_bit_lens, overflow_bit_lens) = Self::compute_range_lens();
+    //     let range_config = RangeChip::configure(
+    //         meta,
+    //         &main_gate_config,
+    //         composition_bit_lens,
+    //         overflow_bit_lens,
+    //     );
+    //     let sha256_bit_config = Sha256BitConfig::configure(meta);
+    //     Sha256DynamicConfig::new(
+    //         main_gate_config,
+    //         range_config,
+    //         sha256_bit_config,
+    //         max_byte_size,
+    //     )
+    // }
+
+    // /// Getter for [`RangeChip`].
+    // pub fn range_chip(&self) -> RangeChip<F> {
+    //     RangeChip::<F>::new(self.config.range_config.clone())
+    // }
 
     /// Getter for [`MainGate`].
     pub fn main_gate(&self) -> MainGate<F> {
@@ -244,61 +153,46 @@ impl<F: Field> Sha256DynamicChip<F> {
         let input_byte_size = input.len();
         assert!(input_byte_size <= self.config.max_byte_size);
         let main_gate = self.main_gate();
-        let range_chip = self.range_chip();
+        // let range_chip = self.range_chip();
         let sha256_bit_chip = self.sha256_bit();
-        let hash = Sha256::digest(input);
+        // let hash = Sha256::digest(input);
         let assigned_rows = layouter.assign_region(
             || "assigned_rows",
             |mut region| sha256_bit_chip.digest(&mut region, input),
         )?;
-        let (sum_input_len, assigned_input, sum_hash_bytes) = layouter.assign_region(
-            || "assign outputs",
+
+        let input_byte_size_with_9 = input_byte_size + 9;
+        let one_round_size = BLOCK_BYTE;
+        let num_round = if input_byte_size_with_9 % one_round_size == 0 {
+            input_byte_size_with_9 / one_round_size
+        } else {
+            input_byte_size_with_9 / one_round_size + 1
+        };
+        let padded_size = one_round_size * num_round;
+        let zero_padding_byte_size = padded_size - input_byte_size - 9;
+        let max_byte_size = self.config.max_byte_size;
+        let max_round = max_byte_size / one_round_size;
+        let remaining_byte_size = max_byte_size - padded_size;
+        assert_eq!(
+            remaining_byte_size,
+            one_round_size * (max_round - num_round)
+        );
+
+        let assigned_input = layouter.assign_region(
+            || "assigned_input",
             |mut region| {
-                let ctx = &mut RegionCtx::new(region, 0);
-
-                let input_byte_size_with_9 = input_byte_size + 9;
-                let one_round_size = BLOCK_BYTE;
-                let num_round = if input_byte_size_with_9 % one_round_size == 0 {
-                    input_byte_size_with_9 / one_round_size
-                } else {
-                    input_byte_size_with_9 / one_round_size + 1
-                };
-                let padded_size = one_round_size * num_round;
-                let zero_padding_byte_size = padded_size - input_byte_size - 9;
-                let max_byte_size = self.config.max_byte_size;
-                let max_round = max_byte_size / one_round_size;
-                let remaining_byte_size = max_byte_size - padded_size;
-                assert_eq!(
-                    remaining_byte_size,
-                    one_round_size * (max_round - num_round)
-                );
-
-                // let mut padded_inputs = input.to_vec();
-                // padded_inputs.push(0x80);
-                // for _ in 0..zero_padding_byte_size {
-                //     padded_inputs.push(0);
-                // }
-                // let mut input_len_bytes = [0; 8];
-                // let le_size_bytes = (8 * input_byte_size).to_le_bytes();
-                // input_len_bytes[0..le_size_bytes.len()].copy_from_slice(&le_size_bytes);
-                // for byte in input_len_bytes.iter().rev() {
-                //     padded_inputs.push(*byte);
-                // }
-                // assert_eq!(padded_inputs.len(), num_round * one_round_size);
-                // for _ in 0..remaining_byte_size {
-                //     padded_inputs.push(0);
-                // }
-                // assert_eq!(padded_inputs.len(), max_byte_size);
-                let mut assign_byte = |byte: u8| {
-                    range_chip.assign(
-                        ctx,
-                        Value::known(F::from(byte as u64)),
-                        8 / Self::NUM_LOOKUP_TABLES,
-                        8,
-                    )
-                };
-
                 let mut assigned_input = vec![];
+                let mut offset = 0;
+                let mut assign_byte = |byte: u8| {
+                    let assigned = region.assign_advice(
+                        || format!("assign byte at offset {}", offset),
+                        self.config.bytes,
+                        offset,
+                        || Value::known(F::from(byte as u64)),
+                    );
+                    offset += 1;
+                    assigned
+                };
                 for byte in input.iter() {
                     assigned_input.push(assign_byte(*byte)?);
                 }
@@ -317,6 +211,14 @@ impl<F: Field> Sha256DynamicChip<F> {
                     assigned_input.push(assign_byte(0u8)?);
                 }
                 assert_eq!(assigned_input.len(), max_byte_size);
+                Ok(assigned_input)
+            },
+        )?;
+
+        let (sum_input_len, sum_hash_bytes) = layouter.assign_region(
+            || "assign outputs",
+            |mut region| {
+                let ctx = &mut RegionCtx::new(region, 0);
 
                 let zero = main_gate.assign_constant(ctx, F::zero())?;
                 let mut sum_input_len = zero.clone();
@@ -362,7 +264,7 @@ impl<F: Field> Sha256DynamicChip<F> {
                             .collect::<Vec<Value<F>>>();
                         let assigned_hash_bytes = hash_bytes_val
                             .iter()
-                            .map(|v| range_chip.assign(ctx, *v, 8 / Self::NUM_LOOKUP_TABLES, 8))
+                            .map(|v| main_gate.assign_value(ctx, *v))
                             .collect::<Result<Vec<AssignedValue<F>>, Error>>()?;
                         let mut sum = zero.clone();
                         for (idx, assigned_byte) in assigned_hash_bytes.iter().enumerate() {
@@ -382,7 +284,23 @@ impl<F: Field> Sha256DynamicChip<F> {
                         }
                     }
                 }
-                Ok((sum_input_len, assigned_input, sum_hash_bytes))
+                Ok((sum_input_len, sum_hash_bytes))
+            },
+        )?;
+
+        layouter.assign_region(
+            || "sum_hash_bytes range",
+            |mut region| {
+                for (idx, byte) in sum_hash_bytes.iter().enumerate() {
+                    let assigned = region.assign_advice(
+                        || format!("bytes of sum_hash_bytes at offset {}", idx),
+                        self.config.bytes,
+                        idx,
+                        || byte.value().map(|v| *v),
+                    )?;
+                    region.constrain_equal(byte.cell(), assigned.cell())?;
+                }
+                Ok(())
             },
         )?;
 
@@ -579,9 +497,14 @@ mod test {
         }
 
         fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
-            let sha256_config = Sha256DynamicChip::configure(meta, Self::MAX_BYTE_SIZE);
-            //let hash_instance = meta.instance_column();
-            //meta.enable_equality(hash_instance);
+            let main_gate_config = MainGate::<F>::configure(meta);
+            let sha256_bit_config = Sha256BitConfig::configure(meta);
+            let sha256_config = Sha256DynamicChip::configure(
+                meta,
+                main_gate_config,
+                sha256_bit_config,
+                Self::MAX_BYTE_SIZE,
+            );
             Self::Config { sha256_config }
         }
 
@@ -590,9 +513,10 @@ mod test {
             config: Self::Config,
             mut layouter: impl Layouter<F>,
         ) -> Result<(), Error> {
+            Sha256DynamicChip::load(&config.sha256_config, &mut layouter)?;
             let sha256_chip = Sha256DynamicChip::new(config.sha256_config.clone());
-            let range_chip = sha256_chip.range_chip();
-            range_chip.load_table(&mut layouter)?;
+            // let range_chip = sha256_chip.range_chip();
+            // range_chip.load_table(&mut layouter)?;
             let (_, _, assigned_hash) = sha256_chip.digest(
                 layouter.namespace(|| "sha256_dynamic_chip"),
                 &self.test_input,
@@ -615,7 +539,7 @@ mod test {
     use rand::{thread_rng, Rng};
     #[test]
     fn test_sha256_correct1() {
-        let k = 11;
+        let k = 10;
 
         // Test vector: "abc"
         let test_input = vec!['a' as u8, 'b' as u8, 'c' as u8];
@@ -650,7 +574,7 @@ mod test {
 
     #[test]
     fn test_sha256_correct2() {
-        let k = 11;
+        let k = 10;
 
         // Test vector: "0x0"
         let test_input = vec![0u8];
@@ -673,7 +597,7 @@ mod test {
 
     #[test]
     fn test_sha256_correct3() {
-        let k = 11;
+        let k = 10;
 
         let test_input = vec![0x1; 60];
 

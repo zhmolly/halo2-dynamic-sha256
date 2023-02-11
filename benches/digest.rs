@@ -32,7 +32,7 @@ use std::marker::PhantomData;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use halo2_dynamic_sha256::{Field, Sha256DynamicChip, Sha256DynamicConfig};
+use halo2_dynamic_sha256::{Field, Sha256BitConfig, Sha256DynamicChip, Sha256DynamicConfig};
 
 use halo2wrong::halo2::{
     poly::commitment::ParamsProver,
@@ -60,7 +60,14 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
         }
 
         fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
-            let sha256_config = Sha256DynamicChip::configure(meta, Self::MAX_BYTE_SIZE);
+            let main_gate_config = MainGate::<F>::configure(meta);
+            let sha256_bit_config = Sha256BitConfig::configure(meta);
+            let sha256_config = Sha256DynamicChip::configure(
+                meta,
+                main_gate_config,
+                sha256_bit_config,
+                Self::MAX_BYTE_SIZE,
+            );
             Self::Config { sha256_config }
         }
 
@@ -69,9 +76,10 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
             config: Self::Config,
             mut layouter: impl Layouter<F>,
         ) -> Result<(), Error> {
+            Sha256DynamicChip::load(&config.sha256_config, &mut layouter)?;
             let sha256_chip = Sha256DynamicChip::new(config.sha256_config.clone());
-            let range_chip = sha256_chip.range_chip();
-            range_chip.load_table(&mut layouter)?;
+            // let range_chip = sha256_chip.range_chip();
+            // range_chip.load_table(&mut layouter)?;
             let (_, _, assigned_hash) = sha256_chip.digest(
                 layouter.namespace(|| "sha256_dynamic_chip"),
                 &self.test_input,
