@@ -289,30 +289,32 @@ impl<F: Field> Sha256DynamicChip<F> {
                 //     padded_inputs.push(0);
                 // }
                 // assert_eq!(padded_inputs.len(), max_byte_size);
+                let mut assign_byte = |byte: u8| {
+                    range_chip.assign(
+                        ctx,
+                        Value::known(F::from(byte as u64)),
+                        8 / Self::NUM_LOOKUP_TABLES,
+                        8,
+                    )
+                };
 
                 let mut assigned_input = vec![];
                 for byte in input.iter() {
-                    assigned_input.push(range_chip.assign(
-                        ctx,
-                        Value::known(F::from(*byte as u64)),
-                        8 / Self::NUM_LOOKUP_TABLES,
-                        8,
-                    )?);
+                    assigned_input.push(assign_byte(*byte)?);
                 }
-                assigned_input.push(main_gate.assign_value(ctx, Value::known(F::from(0x80)))?);
+                assigned_input.push(assign_byte(0x80)?);
                 for _ in 0..zero_padding_byte_size {
-                    assigned_input.push(main_gate.assign_value(ctx, Value::known(F::zero()))?);
+                    assigned_input.push(assign_byte(0u8)?);
                 }
                 let mut input_len_bytes = [0; 8];
                 let le_size_bytes = (8 * input_byte_size).to_le_bytes();
                 input_len_bytes[0..le_size_bytes.len()].copy_from_slice(&le_size_bytes);
                 for byte in input_len_bytes.iter().rev() {
-                    assigned_input
-                        .push(main_gate.assign_value(ctx, Value::known(F::from(*byte as u64)))?);
+                    assigned_input.push(assign_byte(*byte)?);
                 }
                 assert_eq!(assigned_input.len(), num_round * one_round_size);
                 for _ in 0..remaining_byte_size {
-                    assigned_input.push(main_gate.assign_value(ctx, Value::known(F::zero()))?);
+                    assigned_input.push(assign_byte(0u8)?);
                 }
                 assert_eq!(assigned_input.len(), max_byte_size);
 
@@ -613,13 +615,10 @@ mod test {
     use rand::{thread_rng, Rng};
     #[test]
     fn test_sha256_correct1() {
-        let k = 10;
+        let k = 11;
 
         // Test vector: "abc"
         let test_input = vec!['a' as u8, 'b' as u8, 'c' as u8];
-
-        // let rng = thread_rng();
-        // let r = <Fr as halo2wrong::halo2::arithmetic::Field>::random(rng);
 
         let circuit = TestCircuit::<Fr> {
             test_input,
@@ -651,9 +650,7 @@ mod test {
 
     #[test]
     fn test_sha256_correct2() {
-        let k = 10;
-
-        let rng = thread_rng();
+        let k = 11;
 
         // Test vector: "0x0"
         let test_input = vec![0u8];

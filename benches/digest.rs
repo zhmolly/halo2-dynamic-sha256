@@ -171,7 +171,7 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    bench("sha256", 10, c);
+    bench("sha256", 11, c);
     // bench("sha256", 20, c);
 }
 
