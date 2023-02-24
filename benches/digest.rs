@@ -1,27 +1,37 @@
-use halo2wrong::curves::bn256::{Bn256, Fr};
-use halo2wrong::curves::FieldExt;
-use halo2wrong::halo2::poly::kzg::{
-    commitment::{KZGCommitmentScheme, ParamsKZG},
-    multiopen::{ProverGWC, VerifierGWC},
-    strategy::SingleStrategy,
-};
-use halo2wrong::halo2::{
-    circuit::{Layouter, SimpleFloorPlanner, Value},
+use eth_types::Field;
+use halo2_base::halo2_proofs::{
+    circuit::{AssignedCell, Cell, Layouter, Region, SimpleFloorPlanner, Value},
+    halo2curves::bn256::{Bn256, Fr},
     plonk::{
-        create_proof, keygen_pk, keygen_vk, verify_proof, Advice, Circuit, Column,
-        ConstraintSystem, Error, Instance,
+        create_proof, keygen_pk, keygen_vk, Advice, Circuit, Column, ConstraintSystem, Error,
+        Expression, Fixed, Selector, TableColumn, VirtualCells,
     },
-    poly::commitment::Params,
-    transcript::{Blake2bRead, Blake2bWrite, Challenge255},
+    poly::{
+        commitment::{Params, ParamsProver},
+        kzg::{
+            commitment::{KZGCommitmentScheme, ParamsKZG},
+            multiopen::ProverGWC,
+        },
+        Rotation,
+    },
+    transcript::{
+        Blake2bRead, Blake2bWrite, Challenge255, TranscriptReadBuffer, TranscriptWriterBuffer,
+    },
 };
-use maingate::{
-    big_to_fe, decompose_big, fe_to_big, AssignedValue, MainGate, MainGateConfig,
-    MainGateInstructions, RangeChip, RangeConfig, RangeInstructions, RegionCtx,
+use halo2_base::utils::fe_to_bigint;
+use halo2_base::ContextParams;
+use halo2_base::QuantumCell;
+use halo2_base::{
+    gates::{flex_gate::FlexGateConfig, range::RangeConfig, GateInstructions, RangeInstructions},
+    utils::{bigint_to_fe, biguint_to_fe, fe_to_biguint, modulus, PrimeField},
+    AssignedValue, Context,
 };
+use sha2::{Digest, Sha256};
+use zkevm_circuits::sha256_circuit::sha256_bit::{Sha256BitChip, Sha256BitConfig};
+
 use rand::rngs::OsRng;
 use rand::{thread_rng, Rng};
 
-use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io::{prelude::*, BufReader},
@@ -32,19 +42,12 @@ use std::marker::PhantomData;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use halo2_dynamic_sha256::{Field, Sha256BitConfig, Sha256DynamicChip, Sha256DynamicConfig};
+use halo2_base::{gates::range::RangeStrategy::Vertical, SKIP_FIRST_PASS};
+use halo2_dynamic_sha256::Sha256DynamicConfig;
 
-use halo2wrong::halo2::{
-    poly::commitment::ParamsProver,
-    transcript::{TranscriptReadBuffer, TranscriptWriterBuffer},
-};
+const K: u32 = 11;
 
 fn bench(name: &str, k: u32, c: &mut Criterion) {
-    #[derive(Debug, Clone)]
-    struct BenchConfig<F: Field> {
-        sha256_config: Sha256DynamicConfig<F>,
-    }
-
     #[derive(Debug, Clone)]
     struct BenchCircuit<F: Field> {
         test_input: Vec<u8>,
@@ -52,7 +55,7 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
     }
 
     impl<F: Field> Circuit<F> for BenchCircuit<F> {
-        type Config = BenchConfig<F>;
+        type Config = Sha256DynamicConfig<F>;
         type FloorPlanner = SimpleFloorPlanner;
 
         fn without_witnesses(&self) -> Self {
@@ -60,15 +63,23 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
         }
 
         fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
-            let main_gate_config = MainGate::<F>::configure(meta);
             let sha256_bit_config = Sha256BitConfig::configure(meta);
-            let sha256_config = Sha256DynamicChip::configure(
+            let range_config = RangeConfig::configure(
                 meta,
-                main_gate_config,
+                Vertical,
+                &[Self::NUM_ADVICE],
+                &[Self::NUM_LOOKUP_ADVICE],
+                Self::NUM_FIXED,
+                Self::LOOKUP_BITS,
+                0,
+                K as usize,
+            );
+            let sha256 = Sha256DynamicConfig::construct(
                 sha256_bit_config,
                 Self::MAX_BYTE_SIZE,
+                range_config,
             );
-            Self::Config { sha256_config }
+            sha256
         }
 
         fn synthesize(
@@ -76,24 +87,40 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
             config: Self::Config,
             mut layouter: impl Layouter<F>,
         ) -> Result<(), Error> {
-            Sha256DynamicChip::load(&config.sha256_config, &mut layouter)?;
-            let sha256_chip = Sha256DynamicChip::new(config.sha256_config.clone());
-            // let range_chip = sha256_chip.range_chip();
-            // range_chip.load_table(&mut layouter)?;
-            let (_, _, assigned_hash) = sha256_chip.digest(
-                layouter.namespace(|| "sha256_dynamic_chip"),
-                &self.test_input,
+            let sha256 = config;
+            let range = sha256.range().clone();
+            range.load_lookup_table(&mut layouter)?;
+            let mut first_pass = SKIP_FIRST_PASS;
+            layouter.assign_region(
+                || "random rsa modpow test with 2048 bits public keys",
+                |region| {
+                    if first_pass {
+                        first_pass = false;
+                        return Ok(());
+                    }
+
+                    let ctx = &mut sha256.new_context(region);
+                    let (_, _, assigned_hash) = sha256.digest(ctx, &self.test_input)?;
+                    range.finalize(ctx);
+                    {
+                        println!("total advice cells: {}", ctx.total_advice);
+                        let const_rows = ctx.total_fixed + 1;
+                        println!("maximum rows used by a fixed column: {const_rows}");
+                        println!("lookup cells used: {}", ctx.cells_to_lookup.len());
+                    }
+                    Ok(())
+                },
             )?;
-            let maingate = sha256_chip.main_gate();
-            for (idx, cell) in assigned_hash.into_iter().enumerate() {
-                maingate.expose_public(layouter.namespace(|| "publish hash"), cell, idx)?;
-            }
             Ok(())
         }
     }
 
     impl<F: Field> BenchCircuit<F> {
-        const MAX_BYTE_SIZE: usize = 128;
+        const MAX_BYTE_SIZE: usize = 1024;
+        const NUM_ADVICE: usize = 50;
+        const NUM_FIXED: usize = 1;
+        const NUM_LOOKUP_ADVICE: usize = 4;
+        const LOOKUP_BITS: usize = 8;
     }
 
     // Initialize the polynomial commitment parameters
@@ -115,11 +142,11 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
         ParamsKZG::read::<_>(&mut BufReader::new(params_fs)).expect("Failed to read params");
 
     let test_input = vec![0; 60];
-    let output = Sha256::digest(&test_input);
-    let output = output
-        .into_iter()
-        .map(|byte| Fr::from(byte as u64))
-        .collect::<Vec<Fr>>();
+    // let output = Sha256::digest(&test_input);
+    // let output = output
+    //     .into_iter()
+    //     .map(|byte| Fr::from(byte as u64))
+    //     .collect::<Vec<Fr>>();
     let circuit = BenchCircuit {
         test_input: test_input.clone(),
         _f: PhantomData,
@@ -140,7 +167,7 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
                 &params,
                 &pk,
                 &[circuit.clone()],
-                &[&[&output]],
+                &[&[]],
                 OsRng,
                 &mut transcript,
             )
@@ -179,7 +206,7 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    bench("sha256", 11, c);
+    bench("sha256", K, c);
     // bench("sha256", 20, c);
 }
 
