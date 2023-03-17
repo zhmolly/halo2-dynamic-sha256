@@ -27,7 +27,9 @@ use halo2_base::{
     AssignedValue, Context,
 };
 use sha2::{Digest, Sha256};
-use zkevm_circuits::sha256_circuit::sha256_bit::{Sha256BitChip, Sha256BitConfig};
+use zkevm_circuits::sha256_circuit::sha256_compression::{
+    Sha256AssignedRows, Sha256CompressionConfig,
+};
 
 use rand::rngs::OsRng;
 use rand::{thread_rng, Rng};
@@ -63,7 +65,7 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
         }
 
         fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
-            let sha256_bit_config = Sha256BitConfig::configure(meta);
+            let sha256_bit_configs = vec![Sha256CompressionConfig::configure(meta)];
             let range_config = RangeConfig::configure(
                 meta,
                 Vertical,
@@ -75,7 +77,7 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
                 K as usize,
             );
             let sha256 = Sha256DynamicConfig::construct(
-                sha256_bit_config,
+                sha256_bit_configs,
                 Self::MAX_BYTE_SIZE,
                 range_config,
             );
@@ -100,7 +102,7 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
                     }
 
                     let ctx = &mut sha256.new_context(region);
-                    let (_, _, assigned_hash) = sha256.digest(ctx, &self.test_input)?;
+                    let _ = sha256.digest(ctx, &self.test_input)?;
                     range.finalize(ctx);
                     {
                         println!("total advice cells: {}", ctx.total_advice);
@@ -119,7 +121,7 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
         const MAX_BYTE_SIZE: usize = 1024;
         const NUM_ADVICE: usize = 50;
         const NUM_FIXED: usize = 1;
-        const NUM_LOOKUP_ADVICE: usize = 4;
+        const NUM_LOOKUP_ADVICE: usize = 1;
         const LOOKUP_BITS: usize = 8;
     }
 
