@@ -18,6 +18,7 @@ use halo2_base::{
     utils::{bigint_to_fe, biguint_to_fe, fe_to_biguint, modulus, PrimeField},
     AssignedValue, Context,
 };
+use hex;
 use sha2::{Digest, Sha256};
 use zkevm_circuits::sha256_circuit::{
     sha256_compression::{Sha256AssignedRows, Sha256CompressionConfig},
@@ -95,6 +96,7 @@ impl<F: Field> Sha256DynamicConfig<F> {
         for byte in input_len_bytes.iter().rev() {
             padded_inputs.push(*byte);
         }
+
         assert_eq!(padded_inputs.len(), num_round * one_round_size);
         for _ in 0..remaining_byte_size {
             padded_inputs.push(0);
@@ -112,16 +114,19 @@ impl<F: Field> Sha256DynamicConfig<F> {
             QuantumCell::Existing(&assigned_num_round),
             QuantumCell::Constant(F::from(one_round_size as u64)),
         );
+        let assigned_input_with_9_size = gate.add(
+            ctx,
+            QuantumCell::Existing(&assigned_input_byte_size),
+            QuantumCell::Constant(F::from(9u64)),
+        );
         let padding_size = gate.sub(
             ctx,
             QuantumCell::Existing(&padded_size),
-            QuantumCell::Existing(&assigned_input_byte_size),
+            QuantumCell::Existing(&assigned_input_with_9_size),
         );
         let padding_is_less_than_round =
             range.is_less_than_safe(ctx, &padding_size, one_round_size as u64);
         gate.assert_is_const(ctx, &padding_is_less_than_round, F::one());
-        let padding_is_less_than_9 = range.is_less_than_safe(ctx, &padding_size, 9u64);
-        gate.assert_is_const(ctx, &padding_is_less_than_9, F::zero());
 
         let num_column = self.sha256_comp_configs.len();
         let num_round_per_column = max_round / num_column;
@@ -233,7 +238,7 @@ impl<F: Field> Sha256DynamicConfig<F> {
                         QuantumCell::Existing(&sum),
                     );
                 }
-                gate.is_equal(
+                gate.assert_equal(
                     ctx,
                     QuantumCell::Existing(&assigned_word),
                     QuantumCell::Existing(&sum),
@@ -609,16 +614,16 @@ mod test {
     fn test_sha256_correct3() {
         let k = 13;
 
-        let test_input = vec![0x1; 60];
+        let test_input = vec![0x1; 56];
 
         let circuit = TestCircuit::<Fr> {
             test_input,
             _f: PhantomData,
         };
         let test_output: [u8; 32] = [
-            0x5e, 0x40, 0x84, 0xef, 0xf2, 0xf3, 0x7d, 0x63, 0x7e, 0x65, 0x02, 0xbf, 0x94, 0x72,
-            0xb0, 0x02, 0x97, 0x55, 0xbb, 0xd1, 0x30, 0xeb, 0xb5, 0x2c, 0x8c, 0x33, 0xbb, 0x81,
-            0x48, 0xc3, 0x1f, 0xd2,
+            0x51, 0xe1, 0x4a, 0x91, 0x36, 0x80, 0xf2, 0x4c, 0x85, 0xfe, 0x3b, 0x0e, 0x2e, 0x5b,
+            0x57, 0xf7, 0x20, 0x2f, 0x11, 0x7b, 0xb2, 0x14, 0xf8, 0xff, 0xdd, 0x4e, 0xa0, 0xf4,
+            0xe9, 0x21, 0xfd, 0x52,
         ];
         let test_output = test_output.map(|val| Fr::from_u128(val as u128)).to_vec();
         let public_inputs = vec![test_output];
