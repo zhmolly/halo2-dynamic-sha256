@@ -31,9 +31,9 @@ const DIGEST_BYTE: usize = 32;
 
 #[derive(Debug, Clone)]
 pub struct AssignedHashResult<'a, F: Field> {
-    input_len: AssignedValue<'a, F>,
-    input_bytes: Vec<AssignedValue<'a, F>>,
-    output_bytes: Vec<AssignedValue<'a, F>>,
+    pub input_len: AssignedValue<'a, F>,
+    pub input_bytes: Vec<AssignedValue<'a, F>>,
+    pub output_bytes: Vec<AssignedValue<'a, F>>,
 }
 
 #[derive(Debug, Clone)]
