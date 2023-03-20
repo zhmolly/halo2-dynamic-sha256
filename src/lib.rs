@@ -1,10 +1,7 @@
 mod sha256;
-mod table16;
-
-//pub use sha256::*;
+pub use eth_types::Field;
 pub use sha256::*;
-pub use table16::*;
-/// The size of a SHA-256 block, in 32-bit words.
-pub const BLOCK_SIZE: usize = 16;
-/// The size of a SHA-256 digest, in 32-bit words.
-pub(crate) const DIGEST_SIZE: usize = 8;
+pub use zkevm_circuits::sha256_circuit::{
+    sha256_compression::{Sha256AssignedRows, Sha256CompressionConfig},
+    util::H,
+};
