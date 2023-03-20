@@ -39,7 +39,7 @@ pub struct AssignedHashResult<'a, F: Field> {
 #[derive(Debug, Clone)]
 pub struct Sha256DynamicConfig<F: Field> {
     sha256_comp_configs: Vec<Sha256CompressionConfig<F>>,
-    max_byte_size: usize,
+    pub max_byte_size: usize,
     range: RangeConfig<F>,
     //range_config: RangeConfig,
     // pub bytes: Column<Advice>,
