@@ -3,8 +3,18 @@ use halo2_base::halo2_proofs::{
     circuit::{AssignedCell, Cell, Layouter, Region, SimpleFloorPlanner, Value},
     halo2curves::bn256::{Bn256, Fr},
     plonk::{
-        create_proof, keygen_pk, keygen_vk, Advice, Circuit, Column, ConstraintSystem, Error,
-        Expression, Fixed, Selector, TableColumn, VirtualCells,
+        create_proof,
+        keygen_pk,
+        keygen_vk,
+        Circuit,
+        ConstraintSystem,
+        Error,
+        // create_proof, keygen_pk, keygen_vk, Advice, Circuit, Column, ConstraintSystem, Error,
+        Expression,
+        Fixed,
+        Selector,
+        TableColumn,
+        VirtualCells,
     },
     poly::{
         commitment::{Params, ParamsProver},
@@ -78,7 +88,7 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
             );
             let sha256 = Sha256DynamicConfig::construct(
                 sha256_bit_configs,
-                Self::MAX_BYTE_SIZE,
+                vec![Self::MAX_BYTE_SIZE],
                 range_config,
             );
             sha256
@@ -89,7 +99,7 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
             config: Self::Config,
             mut layouter: impl Layouter<F>,
         ) -> Result<(), Error> {
-            let sha256 = config;
+            let mut sha256 = config;
             let range = sha256.range().clone();
             range.load_lookup_table(&mut layouter)?;
             let mut first_pass = SKIP_FIRST_PASS;
