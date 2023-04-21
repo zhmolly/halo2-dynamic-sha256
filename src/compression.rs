@@ -48,26 +48,15 @@ pub fn sha256_compression<'a, 'b: 'a, F: FieldExt>(
             sum
         })
         .collect_vec();
-    let mut message_bits = assigned_input_bytes
-        .chunks(4)
-        .map(|bytes| {
-            bytes
-                .iter()
-                .flat_map(|byte| gate.num_to_bits(ctx, byte, 8))
-                .collect_vec()
-        })
+    let mut message_bits = message_u32s
+        .iter()
+        .map(|val: &AssignedValue<F>| gate.num_to_bits(ctx, val, 32))
         .collect_vec();
     for idx in 16..64 {
         let term1_bits = sigma_s_generic(ctx, gate, &message_bits[idx - 2], 17, 19, 10);
         let term3_bits = sigma_s_generic(ctx, gate, &message_bits[idx - 15], 7, 18, 3);
         let term1_u32 = bits2u32(ctx, gate, &term1_bits);
-        term1_u32
-            .value()
-            .map(|v| println!("term1_u32 {}", v.get_lower_32()));
         let term3_u32 = bits2u32(ctx, gate, &term3_bits);
-        term3_u32
-            .value()
-            .map(|v| println!("term3_u32 {}", v.get_lower_32()));
         let new_w = {
             let add1 = gate.add(
                 ctx,
@@ -91,10 +80,6 @@ pub fn sha256_compression<'a, 'b: 'a, F: FieldExt>(
             let new_w_bits = gate.num_to_bits(ctx, &new_w, 32);
             message_bits.push(new_w_bits);
         }
-    }
-    for (idx, val) in message_u32s.iter().enumerate() {
-        val.value()
-            .map(|v| println!("idx {} v {}", idx, v.get_lower_32()));
     }
 
     // compression
@@ -257,13 +242,13 @@ fn ch<'a, 'b: 'a, F: FieldExt>(
         .collect_vec();
     let not_x_z = x_bits
         .iter()
-        .zip(y_bits.iter())
-        .map(|(x, y)| {
+        .zip(z_bits.iter())
+        .map(|(x, z)| {
             let not_x = gate.not(ctx, QuantumCell::Existing(&x));
             gate.and(
                 ctx,
                 QuantumCell::Existing(&not_x),
-                QuantumCell::Existing(&y),
+                QuantumCell::Existing(&z),
             )
         })
         .collect_vec();
@@ -341,7 +326,6 @@ fn sigma_s_generic<'a, 'b: 'a, F: FieldExt>(
     n3: usize,
 ) -> Vec<AssignedValue<'a, F>> {
     let rotr1 = rotr(ctx, gate, x_bits, n1);
-    // println!("rotr1 {:?}", rotr1);
     let rotr2 = rotr(ctx, gate, x_bits, n2);
     let shr = shr(ctx, gate, x_bits, n3);
     rotr1
@@ -363,11 +347,14 @@ fn rotr<'a, 'b: 'a, F: FieldExt>(
     n: usize,
 ) -> Vec<AssignedValue<'a, F>> {
     debug_assert_eq!(x_bits.len(), 32);
-    let left = shr(ctx, gate, x_bits, n);
-    let right = left_shift(ctx, gate, x_bits, 32 - n);
-    left.into_iter()
-        .zip(right.into_iter())
-        .map(|(l, r)| gate.or(ctx, QuantumCell::Existing(&l), QuantumCell::Existing(&r)))
+    // let left = shr(ctx, gate, x_bits, n);
+    // let right = left_shift(ctx, gate, x_bits, 32 - n);
+    // left.into_iter()
+    //     .zip(right.into_iter())
+    //     .map(|(l, r)| gate.or(ctx, QuantumCell::Existing(&l), QuantumCell::Existing(&r)))
+    //     .collect_vec()
+    (0..32)
+        .map(|idx| x_bits[(idx + n) % 32].clone())
         .collect_vec()
 }
 
@@ -379,8 +366,15 @@ fn shr<'a, 'b: 'a, F: FieldExt>(
 ) -> Vec<AssignedValue<'a, F>> {
     debug_assert_eq!(x_bits.len(), 32);
     let zero = gate.load_zero(ctx);
-    let padding = (0..n).map(|_| zero.clone()).collect_vec();
-    vec![padding, x_bits[0..(32 - n)].to_vec()].concat()
+    (0..32)
+        .map(|idx| {
+            if idx + n >= 32 {
+                zero.clone()
+            } else {
+                x_bits[idx + n].clone()
+            }
+        })
+        .collect_vec()
 }
 
 fn left_shift<'a, 'b: 'a, F: FieldExt>(
@@ -392,8 +386,7 @@ fn left_shift<'a, 'b: 'a, F: FieldExt>(
     debug_assert_eq!(x_bits.len(), 32);
     let zero = gate.load_zero(ctx);
     let padding = (0..n).map(|_| zero.clone()).collect_vec();
-    println!("left x bits {:?}", &x_bits);
-    vec![&x_bits[n..], &padding].concat()
+    vec![&x_bits[n..32], &padding].concat()
 }
 
 fn xor<'a, 'b: 'a, F: FieldExt>(
