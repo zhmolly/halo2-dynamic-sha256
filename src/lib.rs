@@ -612,11 +612,10 @@ mod test {
     impl<F: Field> TestCircuit<F> {
         const MAX_BYTE_SIZE1: usize = 128;
         const MAX_BYTE_SIZE2: usize = 128;
-        const NUM_ADVICE: usize = 30;
+        const NUM_ADVICE: usize = 15;
         const NUM_FIXED: usize = 1;
-        const NUM_LOOKUP_ADVICE: usize = 4;
-        const LOOKUP_BITS: usize = 12;
-        const NUM_COMP: usize = 3;
+        const NUM_LOOKUP_ADVICE: usize = 1;
+        const LOOKUP_BITS: usize = 16;
     }
 
     #[test]

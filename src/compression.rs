@@ -235,27 +235,47 @@ fn ch<'a, 'b: 'a, F: FieldExt>(
     debug_assert_eq!(y_bits.len(), 32);
     debug_assert_eq!(z_bits.len(), 32);
 
-    let x_y = x_bits
-        .iter()
-        .zip(y_bits.iter())
-        .map(|(x, y)| gate.and(ctx, QuantumCell::Existing(&x), QuantumCell::Existing(&y)))
-        .collect_vec();
-    let not_x_z = x_bits
+    // reference: https://github.com/iden3/circomlib/blob/v0.2.4/circuits/sha256/ch.circom
+    let y_sub_z = y_bits
         .iter()
         .zip(z_bits.iter())
-        .map(|(x, z)| {
-            let not_x = gate.not(ctx, QuantumCell::Existing(&x));
-            gate.and(
+        .map(|(y, z)| gate.sub(ctx, QuantumCell::Existing(&y), QuantumCell::Existing(&z)))
+        .collect_vec();
+    x_bits
+        .iter()
+        .zip(y_sub_z.iter())
+        .zip(z_bits.iter())
+        .map(|((x, y), z)| {
+            gate.mul_add(
                 ctx,
-                QuantumCell::Existing(&not_x),
+                QuantumCell::Existing(&x),
+                QuantumCell::Existing(&y),
                 QuantumCell::Existing(&z),
             )
         })
-        .collect_vec();
-    x_y.iter()
-        .zip(not_x_z.iter())
-        .map(|(a, b)| xor(ctx, gate, a, b))
         .collect_vec()
+
+    // let x_y = x_bits
+    //     .iter()
+    //     .zip(y_bits.iter())
+    //     .map(|(x, y)| gate.and(ctx, QuantumCell::Existing(&x), QuantumCell::Existing(&y)))
+    //     .collect_vec();
+    // let not_x_z = x_bits
+    //     .iter()
+    //     .zip(z_bits.iter())
+    //     .map(|(x, z)| {
+    //         let not_x = gate.not(ctx, QuantumCell::Existing(&x));
+    //         gate.and(
+    //             ctx,
+    //             QuantumCell::Existing(&not_x),
+    //             QuantumCell::Existing(&z),
+    //         )
+    //     })
+    //     .collect_vec();
+    // x_y.iter()
+    //     .zip(not_x_z.iter())
+    //     .map(|(a, b)| xor(ctx, gate, a, b))
+    //     .collect_vec()
 }
 
 fn maj<'a, 'b: 'a, F: FieldExt>(
@@ -268,30 +288,57 @@ fn maj<'a, 'b: 'a, F: FieldExt>(
     debug_assert_eq!(x_bits.len(), 32);
     debug_assert_eq!(y_bits.len(), 32);
     debug_assert_eq!(z_bits.len(), 32);
-    let x_y = x_bits
-        .iter()
-        .zip(y_bits.iter())
-        .map(|(x, y)| gate.and(ctx, QuantumCell::Existing(&x), QuantumCell::Existing(&y)))
-        .collect_vec();
-    let x_z = x_bits
+    // reference: https://github.com/iden3/circomlib/blob/v0.2.4/circuits/sha256/maj.circom
+    let mid = y_bits
         .iter()
         .zip(z_bits.iter())
-        .map(|(x, z)| gate.and(ctx, QuantumCell::Existing(&x), QuantumCell::Existing(&z)))
+        .map(|(y, z)| gate.mul(ctx, QuantumCell::Existing(&y), QuantumCell::Existing(&z)))
         .collect_vec();
-    let y_z = y_bits
-        .iter()
-        .zip(z_bits.iter())
-        .map(|(y, z)| gate.and(ctx, QuantumCell::Existing(&y), QuantumCell::Existing(&z)))
-        .collect_vec();
-    let xor1 = x_y
-        .iter()
-        .zip(x_z.iter())
-        .map(|(a, b)| xor(ctx, gate, a, b))
-        .collect_vec();
-    xor1.iter()
-        .zip(y_z.iter())
-        .map(|(a, b)| xor(ctx, gate, a, b))
+    (0..32)
+        .map(|idx| {
+            let add1 = gate.add(
+                ctx,
+                QuantumCell::Existing(&y_bits[idx]),
+                QuantumCell::Existing(&z_bits[idx]),
+            );
+            let add2 = gate.mul_add(
+                ctx,
+                QuantumCell::Existing(&mid[idx]),
+                QuantumCell::Constant(-F::from(2u64)),
+                QuantumCell::Existing(&add1),
+            );
+            gate.mul_add(
+                ctx,
+                QuantumCell::Existing(&x_bits[idx]),
+                QuantumCell::Existing(&add2),
+                QuantumCell::Existing(&mid[idx]),
+            )
+        })
         .collect_vec()
+    // let x_y = x_bits
+    //     .iter()
+    //     .zip(y_bits.iter())
+    //     .map(|(x, y)| gate.and(ctx, QuantumCell::Existing(&x), QuantumCell::Existing(&y)))
+    //     .collect_vec();
+    // let x_z = x_bits
+    //     .iter()
+    //     .zip(z_bits.iter())
+    //     .map(|(x, z)| gate.and(ctx, QuantumCell::Existing(&x), QuantumCell::Existing(&z)))
+    //     .collect_vec();
+    // let y_z = y_bits
+    //     .iter()
+    //     .zip(z_bits.iter())
+    //     .map(|(y, z)| gate.and(ctx, QuantumCell::Existing(&y), QuantumCell::Existing(&z)))
+    //     .collect_vec();
+    // let xor1 = x_y
+    //     .iter()
+    //     .zip(x_z.iter())
+    //     .map(|(a, b)| xor(ctx, gate, a, b))
+    //     .collect_vec();
+    // xor1.iter()
+    //     .zip(y_z.iter())
+    //     .map(|(a, b)| xor(ctx, gate, a, b))
+    //     .collect_vec()
 }
 
 fn sigma_l_generic<'a, 'b: 'a, F: FieldExt>(
@@ -309,11 +356,7 @@ fn sigma_l_generic<'a, 'b: 'a, F: FieldExt>(
         .iter()
         .zip(rotr2.iter())
         .zip(rotr3.iter())
-        .map(|((a, b), c)| {
-            let xor1 = xor(ctx, gate, a, b);
-            let xor2 = xor(ctx, gate, &xor1, c);
-            xor2
-        })
+        .map(|((a, b), c)| xor3(ctx, gate, a, b, c))
         .collect_vec()
 }
 
@@ -332,11 +375,7 @@ fn sigma_s_generic<'a, 'b: 'a, F: FieldExt>(
         .iter()
         .zip(rotr2.iter())
         .zip(shr.iter())
-        .map(|((a, b), c)| {
-            let xor1 = xor(ctx, gate, a, b);
-            let xor2 = xor(ctx, gate, &xor1, c);
-            xor2
-        })
+        .map(|((a, b), c)| xor3(ctx, gate, a, b, c))
         .collect_vec()
 }
 
@@ -347,12 +386,7 @@ fn rotr<'a, 'b: 'a, F: FieldExt>(
     n: usize,
 ) -> Vec<AssignedValue<'a, F>> {
     debug_assert_eq!(x_bits.len(), 32);
-    // let left = shr(ctx, gate, x_bits, n);
-    // let right = left_shift(ctx, gate, x_bits, 32 - n);
-    // left.into_iter()
-    //     .zip(right.into_iter())
-    //     .map(|(l, r)| gate.or(ctx, QuantumCell::Existing(&l), QuantumCell::Existing(&r)))
-    //     .collect_vec()
+    // reference: https://github.com/iden3/circomlib/blob/v0.2.4/circuits/sha256/rotate.circom
     (0..32)
         .map(|idx| x_bits[(idx + n) % 32].clone())
         .collect_vec()
@@ -365,6 +399,7 @@ fn shr<'a, 'b: 'a, F: FieldExt>(
     n: usize,
 ) -> Vec<AssignedValue<'a, F>> {
     debug_assert_eq!(x_bits.len(), 32);
+    // referece: https://github.com/iden3/circomlib/blob/v0.2.4/circuits/sha256/shift.circom
     let zero = gate.load_zero(ctx);
     (0..32)
         .map(|idx| {
@@ -389,20 +424,45 @@ fn left_shift<'a, 'b: 'a, F: FieldExt>(
     vec![&x_bits[n..32], &padding].concat()
 }
 
-fn xor<'a, 'b: 'a, F: FieldExt>(
+fn xor3<'a, 'b: 'a, F: FieldExt>(
     ctx: &mut Context<'b, F>,
     gate: &FlexGateConfig<F>,
     a: &AssignedValue<'a, F>,
     b: &AssignedValue<'a, F>,
+    c: &AssignedValue<'a, F>,
 ) -> AssignedValue<'a, F> {
-    let not_a = gate.not(ctx, QuantumCell::Existing(a));
-    let not_b = gate.not(ctx, QuantumCell::Existing(b));
-    let a_not_b = gate.and(ctx, QuantumCell::Existing(a), QuantumCell::Existing(&not_b));
-    let not_a_b = gate.and(ctx, QuantumCell::Existing(&not_a), QuantumCell::Existing(b));
-    gate.or(
+    // referece: https://github.com/iden3/circomlib/blob/v0.2.4/circuits/sha256/xor3.circom
+    let mid = gate.mul(ctx, QuantumCell::Existing(&b), QuantumCell::Existing(&c));
+    let mid_term = gate.mul_add(
         ctx,
-        QuantumCell::Existing(&a_not_b),
-        QuantumCell::Existing(&not_a_b),
+        QuantumCell::Existing(&b),
+        QuantumCell::Constant(-F::from(2u64)),
+        QuantumCell::Constant(F::from(1u64)),
+    );
+    let mid_term = gate.mul_add(
+        ctx,
+        QuantumCell::Existing(&c),
+        QuantumCell::Constant(-F::from(2u64)),
+        QuantumCell::Existing(&mid_term),
+    );
+    let mid_term = gate.mul_add(
+        ctx,
+        QuantumCell::Existing(&mid),
+        QuantumCell::Constant(F::from(4u64)),
+        QuantumCell::Existing(&mid_term),
+    );
+    let b_c = gate.add(ctx, QuantumCell::Existing(&b), QuantumCell::Existing(&c));
+    let add_term = gate.mul_add(
+        ctx,
+        QuantumCell::Existing(&mid),
+        QuantumCell::Constant(-F::from(2u64)),
+        QuantumCell::Existing(&b_c),
+    );
+    gate.mul_add(
+        ctx,
+        QuantumCell::Existing(&a),
+        QuantumCell::Existing(&mid_term),
+        QuantumCell::Existing(&add_term),
     )
 }
 
