@@ -1,4 +1,3 @@
-use eth_types::Field;
 use halo2_base::halo2_proofs::halo2curves::FieldExt;
 use halo2_base::halo2_proofs::{
     circuit::{AssignedCell, Cell, Layouter, Region, SimpleFloorPlanner, Value},

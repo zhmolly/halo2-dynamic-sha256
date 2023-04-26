@@ -18,9 +18,9 @@ halo2-ecc = { version = "0.2.2", default-features = false, features = [
     "halo2-pse",
     "display",
 ], git = "https://github.com/axiom-crypto/halo2-lib.git" }
-zkevm-circuits = { git = "https://github.com/SoraSuegami/zkevm-circuits.git", branch = "feat/simple_compression" }
+# zkevm-circuits = { git = "https://github.com/SoraSuegami/zkevm-circuits.git", branch = "feat/simple_compression" }
 # halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2.git", tag = "v2022_10_22" }
-eth-types = { git = "https://github.com/SoraSuegami/zkevm-circuits.git", branch = "feat/simple_compression" }
+# eth-types = { git = "https://github.com/SoraSuegami/zkevm-circuits.git", branch = "feat/simple_compression" }
 log = "0.4"
 
 # rand_xorshift = "0.3"

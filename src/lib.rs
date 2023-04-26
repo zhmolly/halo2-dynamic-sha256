@@ -510,7 +510,6 @@ mod test {
     use std::marker::PhantomData;
 
     use super::*;
-    use eth_types::Field;
     use halo2_base::halo2_proofs::{
         circuit::{Cell, Layouter, Region, SimpleFloorPlanner},
         dev::MockProver,
@@ -524,18 +523,18 @@ mod test {
     use rand::{thread_rng, Rng};
 
     #[derive(Debug, Clone)]
-    struct TestConfig<F: Field> {
+    struct TestConfig<F: FieldExt> {
         sha256: Sha256DynamicConfig<F>,
         hash_column: Column<Instance>,
     }
 
     #[derive(Debug, Clone)]
-    struct TestCircuit<F: Field> {
+    struct TestCircuit<F: FieldExt> {
         test_inputs: Vec<Vec<u8>>,
         _f: PhantomData<F>,
     }
 
-    impl<F: Field> Circuit<F> for TestCircuit<F> {
+    impl<F: FieldExt> Circuit<F> for TestCircuit<F> {
         type Config = TestConfig<F>;
         type FloorPlanner = SimpleFloorPlanner;
 
@@ -609,7 +608,7 @@ mod test {
         }
     }
 
-    impl<F: Field> TestCircuit<F> {
+    impl<F: FieldExt> TestCircuit<F> {
         const MAX_BYTE_SIZE1: usize = 128;
         const MAX_BYTE_SIZE2: usize = 128;
         const NUM_ADVICE: usize = 15;
