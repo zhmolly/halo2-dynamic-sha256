@@ -80,10 +80,10 @@ impl<F: FieldExt> Sha256DynamicConfig<F> {
         let padded_size = one_round_size * num_round;
         let max_byte_size = self.max_byte_sizes[self.cur_hash_idx];
         let max_round = max_byte_size / one_round_size;
-        debug_assert!(padded_size <= max_byte_size);
+        assert!(padded_size <= max_byte_size);
         let zero_padding_byte_size = padded_size - input_byte_size_with_9;
         let remaining_byte_size = max_byte_size - padded_size;
-        debug_assert_eq!(
+        assert_eq!(
             remaining_byte_size,
             one_round_size * (max_round - num_round)
         );
