@@ -1,4 +1,6 @@
 mod compression;
+pub(crate) mod spread;
+pub(crate) mod utils;
 pub use compression::*;
 // pub use eth_types::Field;
 // pub use zkevm_circuits::sha256_circuit::{
@@ -8,7 +10,6 @@ pub use compression::*;
 
 use halo2_base::halo2_proofs::{
     circuit::{AssignedCell, Cell, Layouter, Region, SimpleFloorPlanner, Value},
-    halo2curves::FieldExt,
     plonk::{
         Advice, Circuit, Column, ConstraintSystem, Error, Expression, Fixed, Selector, TableColumn,
         VirtualCells,
@@ -25,40 +26,47 @@ use halo2_base::{
 };
 use hex;
 use sha2::{Digest, Sha256};
+use spread::SpreadConfig;
 
 // const Sha256BitChipRowPerRound: usize = 72;
 // const BLOCK_BYTE: usize = 64;
 // const DIGEST_BYTE: usize = 32;
 
 #[derive(Debug, Clone)]
-pub struct AssignedHashResult<'a, F: FieldExt> {
+pub struct AssignedHashResult<'a, F: PrimeField> {
     pub input_len: AssignedValue<'a, F>,
     pub input_bytes: Vec<AssignedValue<'a, F>>,
     pub output_bytes: Vec<AssignedValue<'a, F>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct Sha256DynamicConfig<F: FieldExt> {
+pub struct Sha256DynamicConfig<F: PrimeField> {
     pub max_byte_sizes: Vec<usize>,
     range: RangeConfig<F>,
+    spread_config: SpreadConfig<F>,
     pub cur_hash_idx: usize,
     is_input_range_check: bool,
 }
 
-impl<F: FieldExt> Sha256DynamicConfig<F> {
+impl<F: PrimeField> Sha256DynamicConfig<F> {
     const ONE_ROUND_INPUT_BYTES: usize = 64;
-    pub fn construct(
+    pub fn configure(
+        meta: &mut ConstraintSystem<F>,
         max_byte_sizes: Vec<usize>,
         range: RangeConfig<F>,
+        num_bits_lookup: usize,
+        num_advice_columns: usize,
         is_input_range_check: bool,
     ) -> Self {
         for byte in max_byte_sizes.iter() {
             debug_assert_eq!(byte % Self::ONE_ROUND_INPUT_BYTES, 0);
         }
-        let max_byte_sum = max_byte_sizes.iter().sum::<usize>();
+        // let max_byte_sum = max_byte_sizes.iter().sum::<usize>();
+        let spread_config = SpreadConfig::configure(meta, num_bits_lookup, num_advice_columns);
         Self {
             max_byte_sizes,
             range,
+            spread_config,
             cur_hash_idx: 0,
             is_input_range_check,
         }
@@ -154,9 +162,10 @@ impl<F: FieldExt> Sha256DynamicConfig<F> {
             let new_assigned_hs_out = sha256_compression(
                 ctx,
                 &range,
+                &mut self.spread_config,
                 assigned_input_word_at_round,
                 &assigned_last_hs_vec.last().unwrap(),
-            );
+            )?;
 
             // let (witness, next_hs) = sha2_comp_config.compute_witness(
             //     &padded_inputs[num_processed_input..(num_processed_input + one_round_size)],
@@ -318,165 +327,6 @@ impl<F: FieldExt> Sha256DynamicConfig<F> {
         Ok(result)
     }
 
-    // pub fn digest<'a, 'b: 'a>(
-    //     &'a self,
-    //     //mut layouter: impl Layouter<F>,
-    //     ctx: &mut Context<'b, F>,
-    //     input: &'a [u8],
-    // ) -> Result<
-    //     (
-    //         AssignedValue<'b, F>,
-    //         Vec<AssignedValue<'b, F>>,
-    //         Vec<AssignedValue<'b, F>>,
-    //     ),
-    //     Error,
-    // > {
-    //     let input_byte_size = input.len();
-    //     let max_byte_size = self.max_byte_size;
-    //     assert!(input_byte_size <= max_byte_size);
-    //     let range = &self.range;
-    //     let gate = &range.gate;
-    //     let sha256_bit_chip = Sha256BitChip::new(self.sha256_bit_config.clone(), max_byte_size);
-    //     let assigned_rows = sha256_bit_chip.digest(&mut ctx.region, input)?;
-    //     // let assigned_rows = layouter.assign_region(
-    //     //     || "assigned_rows",
-    //     //     |mut region| sha256_bit_chip.digest(&mut region, input),
-    //     // )?;
-
-    //     let input_byte_size_with_9 = input_byte_size + 9;
-    //     let one_round_size = BLOCK_BYTE;
-    //     let num_round = if input_byte_size_with_9 % one_round_size == 0 {
-    //         input_byte_size_with_9 / one_round_size
-    //     } else {
-    //         input_byte_size_with_9 / one_round_size + 1
-    //     };
-    //     let padded_size = one_round_size * num_round;
-    //     let zero_padding_byte_size = padded_size - input_byte_size - 9;
-    //     let max_round = max_byte_size / one_round_size;
-    //     let remaining_byte_size = max_byte_size - padded_size;
-    //     assert_eq!(
-    //         remaining_byte_size,
-    //         one_round_size * (max_round - num_round)
-    //     );
-
-    //     let mut assigned_input = vec![];
-    //     let mut assign_byte = |byte: u8| gate.load_witness(ctx, Value::known(F::from(byte as u64)));
-    //     for byte in input.iter() {
-    //         //range.range_check(ctx, &assigned, 8);
-    //         assigned_input.push(assign_byte(*byte));
-    //     }
-    //     assigned_input.push(assign_byte(0x80));
-    //     for _ in 0..zero_padding_byte_size {
-    //         assigned_input.push(assign_byte(0u8));
-    //     }
-    //     let mut input_len_bytes = [0; 8];
-    //     let le_size_bytes = (8 * input_byte_size).to_le_bytes();
-    //     input_len_bytes[0..le_size_bytes.len()].copy_from_slice(&le_size_bytes);
-    //     for byte in input_len_bytes.iter().rev() {
-    //         assigned_input.push(assign_byte(*byte));
-    //     }
-    //     assert_eq!(assigned_input.len(), num_round * one_round_size);
-    //     for _ in 0..remaining_byte_size {
-    //         assigned_input.push(assign_byte(0u8));
-    //     }
-    //     assert_eq!(assigned_input.len(), max_byte_size);
-    //     for assigned in assigned_input.iter() {
-    //         range.range_check(ctx, assigned, 8);
-    //     }
-
-    //     let zero = gate.load_zero(ctx);
-    //     let mut sum_input_len = zero.clone();
-    //     let mut sum_hash_bytes = vec![zero.clone(); 32];
-    //     for round_idx in 0..max_round {
-    //         let input_len = self.assigned_cell2value(ctx, &assigned_rows.input_len[round_idx])?;
-    //         let input_words = assigned_rows.input_words[16 * round_idx..16 * (round_idx + 1)]
-    //             .into_iter()
-    //             .map(|v| self.assigned_cell2value(ctx, v))
-    //             .collect::<Result<Vec<AssignedValue<F>>, Error>>()?;
-    //         let is_output_enabled =
-    //             self.assigned_cell2value(ctx, &assigned_rows.is_output_enabled[round_idx])?;
-    //         let output_words = assigned_rows.output_words[4 * round_idx..4 * round_idx + 4]
-    //             .into_iter()
-    //             .map(|v| self.assigned_cell2value(ctx, v))
-    //             .collect::<Result<Vec<AssignedValue<F>>, Error>>()?;
-    //         //let is_dummy = &assigned_rows.is_dummy[round_idx];
-
-    //         sum_input_len = {
-    //             let muled = gate.mul(
-    //                 ctx,
-    //                 QuantumCell::Existing(&is_output_enabled),
-    //                 QuantumCell::Existing(&input_len),
-    //             );
-    //             gate.add(
-    //                 ctx,
-    //                 QuantumCell::Existing(&sum_input_len),
-    //                 QuantumCell::Existing(&muled),
-    //             )
-    //         };
-
-    //         for word_idx in 0..16 {
-    //             let offset_in = 64 * round_idx + 4 * word_idx;
-    //             let assigned_input_u32 = &assigned_input[offset_in + 0..offset_in + 4];
-    //             let mut sum = zero.clone();
-    //             for (idx, assigned_byte) in assigned_input_u32.iter().enumerate() {
-    //                 sum = gate.mul_add(
-    //                     ctx,
-    //                     QuantumCell::Existing(assigned_byte),
-    //                     QuantumCell::Constant(F::from_u128(1u128 << (8 * idx))),
-    //                     QuantumCell::Existing(&sum),
-    //                 );
-    //             }
-    //             gate.assert_equal(
-    //                 ctx,
-    //                 QuantumCell::Existing(&sum),
-    //                 QuantumCell::Existing(&input_words[word_idx]),
-    //             );
-    //         }
-
-    //         for word_idx in 0..4 {
-    //             let hash_bytes_val = (0..8)
-    //                 .map(|idx| {
-    //                     output_words[word_idx]
-    //                         .value()
-    //                         .map(|v| (v.get_lower_128() >> (8 * idx)) & ((1u128 << 8) - 1u128))
-    //                         .map(|v| F::from_u128(v))
-    //                 })
-    //                 .collect::<Vec<Value<F>>>();
-    //             let assigned_hash_bytes = hash_bytes_val
-    //                 .iter()
-    //                 .map(|v| gate.load_witness(ctx, *v))
-    //                 .collect::<Vec<AssignedValue<F>>>();
-    //             let mut sum = zero.clone();
-    //             for (idx, assigned_byte) in assigned_hash_bytes.iter().enumerate() {
-    //                 sum = gate.mul_add(
-    //                     ctx,
-    //                     QuantumCell::Existing(&assigned_byte),
-    //                     QuantumCell::Constant(F::from(1 << (8 * idx))),
-    //                     QuantumCell::Existing(&sum),
-    //                 );
-    //             }
-    //             gate.assert_equal(
-    //                 ctx,
-    //                 QuantumCell::Existing(&sum),
-    //                 QuantumCell::Existing(&output_words[word_idx]),
-    //             );
-    //             for idx in 0..8 {
-    //                 sum_hash_bytes[8 * word_idx + idx] = gate.mul_add(
-    //                     ctx,
-    //                     QuantumCell::Existing(&is_output_enabled),
-    //                     QuantumCell::Existing(&assigned_hash_bytes[idx]),
-    //                     QuantumCell::Existing(&sum_hash_bytes[8 * word_idx + idx]),
-    //                 );
-    //             }
-    //         }
-    //     }
-    //     for byte in sum_hash_bytes.iter() {
-    //         range.range_check(ctx, byte, 8);
-    //     }
-
-    //     Ok((sum_input_len, assigned_input, sum_hash_bytes))
-    // }
-
     pub fn new_context<'a, 'b>(&'b self, region: Region<'a, F>) -> Context<'a, F> {
         Context::new(
             region,
@@ -492,16 +342,8 @@ impl<F: FieldExt> Sha256DynamicConfig<F> {
         &self.range
     }
 
-    fn assigned_cell2value<'v>(
-        &self,
-        ctx: &mut Context<'v, F>,
-        assigned_cell: &AssignedCell<F, F>,
-    ) -> Result<AssignedValue<'v, F>, Error> {
-        let gate = self.range.gate();
-        let assigned_value = gate.load_witness(ctx, assigned_cell.value().map(|v| *v));
-        ctx.region
-            .constrain_equal(assigned_cell.cell(), assigned_value.cell())?;
-        Ok(assigned_value)
+    pub fn load(&self, layouter: &mut impl Layouter<F>) -> Result<(), Error> {
+        self.spread_config.load(layouter)
     }
 }
 
@@ -523,18 +365,18 @@ mod test {
     use rand::{thread_rng, Rng};
 
     #[derive(Debug, Clone)]
-    struct TestConfig<F: FieldExt> {
+    struct TestConfig<F: PrimeField> {
         sha256: Sha256DynamicConfig<F>,
         hash_column: Column<Instance>,
     }
 
     #[derive(Debug, Clone)]
-    struct TestCircuit<F: FieldExt> {
+    struct TestCircuit<F: PrimeField> {
         test_inputs: Vec<Vec<u8>>,
         _f: PhantomData<F>,
     }
 
-    impl<F: FieldExt> Circuit<F> for TestCircuit<F> {
+    impl<F: PrimeField> Circuit<F> for TestCircuit<F> {
         type Config = TestConfig<F>;
         type FloorPlanner = SimpleFloorPlanner;
 
@@ -555,9 +397,12 @@ mod test {
             );
             let hash_column = meta.instance_column();
             meta.enable_equality(hash_column);
-            let sha256: Sha256DynamicConfig<F> = Sha256DynamicConfig::construct(
+            let sha256: Sha256DynamicConfig<F> = Sha256DynamicConfig::configure(
+                meta,
                 vec![Self::MAX_BYTE_SIZE1, Self::MAX_BYTE_SIZE2],
                 range_config,
+                8,
+                2,
                 true,
             );
             Self::Config {
@@ -574,6 +419,7 @@ mod test {
             let mut sha256 = config.sha256.clone();
             let range = sha256.range().clone();
             sha256.range().load_lookup_table(&mut layouter)?;
+            sha256.load(&mut layouter)?;
             let mut first_pass = SKIP_FIRST_PASS;
             let mut assigned_hash_cells = vec![];
             layouter.assign_region(
@@ -608,10 +454,10 @@ mod test {
         }
     }
 
-    impl<F: FieldExt> TestCircuit<F> {
+    impl<F: PrimeField> TestCircuit<F> {
         const MAX_BYTE_SIZE1: usize = 128;
         const MAX_BYTE_SIZE2: usize = 128;
-        const NUM_ADVICE: usize = 15;
+        const NUM_ADVICE: usize = 3;
         const NUM_FIXED: usize = 1;
         const NUM_LOOKUP_ADVICE: usize = 1;
         const LOOKUP_BITS: usize = 16;
