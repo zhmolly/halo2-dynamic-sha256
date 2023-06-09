@@ -61,8 +61,10 @@ pub fn sha256_compression<'a, 'b: 'a, F: PrimeField>(
     //     .map(|val: &AssignedValue<F>| gate.num_to_bits(ctx, val, 32))
     //     .collect_vec();
     for idx in 16..64 {
-        let term1 = sigma_lower1(ctx, range, spread_config, &message_u32s[idx - 2])?;
-        let term3 = sigma_lower0(ctx, range, spread_config, &message_u32s[idx - 15])?;
+        let w_2_spread = state_to_spread_u32(ctx, range, spread_config, &message_u32s[idx - 2])?;
+        let w_15_spread = state_to_spread_u32(ctx, range, spread_config, &message_u32s[idx - 15])?;
+        let term1 = sigma_lower1(ctx, range, spread_config, &w_2_spread)?;
+        let term3 = sigma_lower0(ctx, range, spread_config, &w_15_spread)?;
         // let term1_u32 = bits2u32(ctx, gate, &term1_bits);
         // let term3_u32 = bits2u32(ctx, gate, &term3_bits);
         let new_w = {
@@ -118,10 +120,10 @@ pub fn sha256_compression<'a, 'b: 'a, F: PrimeField>(
     let mut t2 = gate.load_zero(ctx);
     for idx in 0..64 {
         t1 = {
-            let sigma_term = sigma_upper1(ctx, range, spread_config, &e)?;
             let e_spread = state_to_spread_u32(ctx, range, spread_config, &e)?;
             let f_spread = state_to_spread_u32(ctx, range, spread_config, &f)?;
             let g_spread = state_to_spread_u32(ctx, range, spread_config, &g)?;
+            let sigma_term = sigma_upper1(ctx, range, spread_config, &e_spread)?;
             let ch_term = ch(ctx, range, spread_config, &e_spread, &f_spread, &g_spread)?;
             // println!(
             //     "idx {} sigma {:?} ch {:?}",
@@ -152,10 +154,10 @@ pub fn sha256_compression<'a, 'b: 'a, F: PrimeField>(
             mod_u32(ctx, &range, &add4)
         };
         t2 = {
-            let sigma_term = sigma_upper0(ctx, range, spread_config, &a)?;
             let a_spread = state_to_spread_u32(ctx, range, spread_config, &a)?;
             let b_spread = state_to_spread_u32(ctx, range, spread_config, &b)?;
             let c_spread = state_to_spread_u32(ctx, range, spread_config, &c)?;
+            let sigma_term = sigma_upper0(ctx, range, spread_config, &a_spread)?;
             let maj_term = maj(ctx, range, spread_config, &a_spread, &b_spread, &c_spread)?;
             let add = gate.add(
                 ctx,
@@ -605,7 +607,7 @@ fn sigma_upper0<'a, 'b: 'a, F: PrimeField>(
     ctx: &mut Context<'b, F>,
     range: &RangeConfig<F>,
     spread_config: &mut SpreadConfig<F>,
-    x: &AssignedValue<F>,
+    x_spread: &SpreadU32<F>,
 ) -> Result<AssignedValue<'a, F>, Error> {
     const STARTS: [usize; 4] = [0, 2, 13, 22];
     const ENDS: [usize; 4] = [2, 13, 22, 32];
@@ -620,7 +622,7 @@ fn sigma_upper0<'a, 'b: 'a, F: PrimeField>(
         ctx,
         range,
         spread_config,
-        x,
+        x_spread,
         &STARTS,
         &ENDS,
         &PADDINGS,
@@ -632,7 +634,7 @@ fn sigma_upper1<'a, 'b: 'a, F: PrimeField>(
     ctx: &mut Context<'b, F>,
     range: &RangeConfig<F>,
     spread_config: &mut SpreadConfig<F>,
-    x: &AssignedValue<F>,
+    x_spread: &SpreadU32<F>,
 ) -> Result<AssignedValue<'a, F>, Error> {
     const STARTS: [usize; 4] = [0, 6, 11, 25];
     const ENDS: [usize; 4] = [6, 11, 25, 32];
@@ -647,7 +649,7 @@ fn sigma_upper1<'a, 'b: 'a, F: PrimeField>(
         ctx,
         range,
         spread_config,
-        x,
+        x_spread,
         &STARTS,
         &ENDS,
         &PADDINGS,
@@ -659,7 +661,7 @@ fn sigma_lower0<'a, 'b: 'a, F: PrimeField>(
     ctx: &mut Context<'b, F>,
     range: &RangeConfig<F>,
     spread_config: &mut SpreadConfig<F>,
-    x: &AssignedValue<F>,
+    x_spread: &SpreadU32<F>,
 ) -> Result<AssignedValue<'a, F>, Error> {
     const STARTS: [usize; 4] = [0, 3, 7, 18];
     const ENDS: [usize; 4] = [3, 7, 18, 32];
@@ -674,7 +676,7 @@ fn sigma_lower0<'a, 'b: 'a, F: PrimeField>(
         ctx,
         range,
         spread_config,
-        x,
+        x_spread,
         &STARTS,
         &ENDS,
         &PADDINGS,
@@ -686,7 +688,7 @@ fn sigma_lower1<'a, 'b: 'a, F: PrimeField>(
     ctx: &mut Context<'b, F>,
     range: &RangeConfig<F>,
     spread_config: &mut SpreadConfig<F>,
-    x: &AssignedValue<F>,
+    x_spread: &SpreadU32<F>,
 ) -> Result<AssignedValue<'a, F>, Error> {
     const STARTS: [usize; 4] = [0, 10, 17, 19];
     const ENDS: [usize; 4] = [10, 17, 19, 32];
@@ -701,7 +703,7 @@ fn sigma_lower1<'a, 'b: 'a, F: PrimeField>(
         ctx,
         range,
         spread_config,
-        x,
+        x_spread,
         &STARTS,
         &ENDS,
         &PADDINGS,
@@ -713,19 +715,24 @@ fn sigma_generic<'a, 'b: 'a, F: PrimeField>(
     ctx: &mut Context<'b, F>,
     range: &RangeConfig<F>,
     spread_config: &mut SpreadConfig<F>,
-    x: &AssignedValue<F>,
+    x_spread: &SpreadU32<F>,
     starts: &[usize; 4],
     ends: &[usize; 4],
     paddings: &[usize; 4],
     coeffs: &[F; 4],
 ) -> Result<AssignedValue<'a, F>, Error> {
     let gate = range.gate();
-    let bits_val = x.value().map(|val| fe_to_bits_le(val, 32));
+    // let x_spread = spread_config.spread(ctx, range, x)?;
+    let bits_val = x_spread.0.value().zip(x_spread.1.value()).map(|(lo, hi)| {
+        let mut bits = fe_to_bits_le(lo, 32);
+        bits.append(&mut fe_to_bits_le(hi, 32));
+        bits
+    });
     let mut assign_bits =
         |bits_val: &Value<Vec<bool>>, start: usize, end: usize, padding: usize| {
             let fe_val: Value<F> = bits_val.as_ref().map(|bits| {
-                let mut bits = bits[start..end].to_vec();
-                bits.extend_from_slice(&vec![false; padding]);
+                let mut bits = bits[(2 * start)..(2 * end)].to_vec();
+                bits.extend_from_slice(&vec![false; 64 - bits.len()]);
                 bits_le_to_fe(&bits)
             });
             let assigned = gate.load_witness(ctx, fe_val);
@@ -742,22 +749,32 @@ fn sigma_generic<'a, 'b: 'a, F: PrimeField>(
         sum = gate.mul_add(
             ctx,
             QuantumCell::Existing(&assigned_b),
-            QuantumCell::Constant(F::from(1 << (starts[1]))),
+            QuantumCell::Constant(F::from(1 << (2 * starts[1]))),
             QuantumCell::Existing(&sum),
         );
         sum = gate.mul_add(
             ctx,
             QuantumCell::Existing(&assigned_c),
-            QuantumCell::Constant(F::from(1 << (starts[2]))),
+            QuantumCell::Constant(F::from(1 << (2 * starts[2]))),
             QuantumCell::Existing(&sum),
         );
         sum = gate.mul_add(
             ctx,
             QuantumCell::Existing(&assigned_d),
-            QuantumCell::Constant(F::from(1 << (starts[3]))),
+            QuantumCell::Constant(F::from(1 << (2 * starts[3]))),
             QuantumCell::Existing(&sum),
         );
-        gate.assert_equal(ctx, QuantumCell::Existing(&x), QuantumCell::Existing(&sum));
+        let x_composed = gate.mul_add(
+            ctx,
+            QuantumCell::Existing(&x_spread.1),
+            QuantumCell::Constant(F::from(1 << 32)),
+            QuantumCell::Existing(&x_spread.0),
+        );
+        gate.assert_equal(
+            ctx,
+            QuantumCell::Existing(&x_composed),
+            QuantumCell::Existing(&sum),
+        );
     };
     // println!(
     //     "x {:?}, a {:?}, b {:?}, c {:?}, d {:?}",
@@ -773,32 +790,32 @@ fn sigma_generic<'a, 'b: 'a, F: PrimeField>(
         // let c_coeff = F::from(1u64 << 22 + 1u64 << 0 + 1u64 << 46);
         // let d_coeff = F::from(1u64 << 40 + 1u64 << 18 + 1u64 << 0);
         let mut sum = gate.load_zero(ctx);
-        let assigned_a_spread = spread_config.spread(ctx, range, &assigned_a)?;
-        let assigned_b_spread = spread_config.spread(ctx, range, &assigned_b)?;
-        let assigned_c_spread = spread_config.spread(ctx, range, &assigned_c)?;
-        let assigned_d_spread = spread_config.spread(ctx, range, &assigned_d)?;
+        // let assigned_a_spread = spread_config.spread(ctx, range, &assigned_a)?;
+        // let assigned_b_spread = spread_config.spread(ctx, range, &assigned_b)?;
+        // let assigned_c_spread = spread_config.spread(ctx, range, &assigned_c)?;
+        // let assigned_d_spread = spread_config.spread(ctx, range, &assigned_d)?;
         sum = gate.mul_add(
             ctx,
             QuantumCell::Constant(coeffs[0]),
-            QuantumCell::Existing(&assigned_a_spread),
+            QuantumCell::Existing(&assigned_a),
             QuantumCell::Existing(&sum),
         );
         sum = gate.mul_add(
             ctx,
             QuantumCell::Constant(coeffs[1]),
-            QuantumCell::Existing(&assigned_b_spread),
+            QuantumCell::Existing(&assigned_b),
             QuantumCell::Existing(&sum),
         );
         sum = gate.mul_add(
             ctx,
             QuantumCell::Constant(coeffs[2]),
-            QuantumCell::Existing(&assigned_c_spread),
+            QuantumCell::Existing(&assigned_c),
             QuantumCell::Existing(&sum),
         );
         sum = gate.mul_add(
             ctx,
             QuantumCell::Constant(coeffs[3]),
-            QuantumCell::Existing(&assigned_d_spread),
+            QuantumCell::Existing(&assigned_d),
             QuantumCell::Existing(&sum),
         );
         sum

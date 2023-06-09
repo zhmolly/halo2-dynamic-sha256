@@ -206,7 +206,6 @@ impl<F: PrimeField> SpreadConfig<F> {
         limb_idx: usize,
     ) -> Result<AssignedValue<'a, F>, Error> {
         let column_idx = limb_idx % self.num_advice_columns;
-        println!("row_offset {}", self.row_offset);
         let assigned_dense_cell = ctx.region.assign_advice(
             || format!("dense at offset {}", self.row_offset),
             self.denses[column_idx],
