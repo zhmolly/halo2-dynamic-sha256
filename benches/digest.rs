@@ -1,4 +1,3 @@
-use eth_types::Field;
 use halo2_base::halo2_proofs::{
     circuit::{AssignedCell, Cell, Layouter, Region, SimpleFloorPlanner, Value},
     halo2curves::bn256::{Bn256, Fr},
@@ -37,9 +36,6 @@ use halo2_base::{
     AssignedValue, Context,
 };
 use sha2::{Digest, Sha256};
-use zkevm_circuits::sha256_circuit::sha256_compression::{
-    Sha256AssignedRows, Sha256CompressionConfig,
-};
 
 use rand::rngs::OsRng;
 use rand::{thread_rng, Rng};

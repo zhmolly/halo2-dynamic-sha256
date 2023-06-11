@@ -30,6 +30,7 @@ pub struct SpreadConfig<F: PrimeField> {
     table_spread: TableColumn,
     num_bits_lookup: usize,
     num_advice_columns: usize,
+    num_limb_sum: usize,
     row_offset: usize,
     _f: PhantomData<F>,
 }
@@ -41,7 +42,7 @@ impl<F: PrimeField> SpreadConfig<F> {
         num_advice_columns: usize,
     ) -> Self {
         debug_assert_eq!(16 % num_bits_lookup, 0);
-        debug_assert_eq!(16 % (num_bits_lookup * num_advice_columns), 0);
+        // debug_assert_eq!(16 % (num_bits_lookup * num_advice_columns), 0);
         let denses = (0..num_advice_columns)
             .map(|_| {
                 let column = meta.advice_column();
@@ -73,6 +74,7 @@ impl<F: PrimeField> SpreadConfig<F> {
             table_spread,
             num_bits_lookup,
             num_advice_columns,
+            num_limb_sum: 0,
             row_offset: 0,
             _f: PhantomData,
         }
@@ -116,7 +118,7 @@ impl<F: PrimeField> SpreadConfig<F> {
         // println!("dense: {:?}", dense.value());
         for (idx, limb) in assigned_limbs.iter().enumerate() {
             // println!("idx {}, limb {:?}", idx, limb.value());
-            let spread_limb = self.spread_limb(ctx, &gate, limb, idx)?;
+            let spread_limb = self.spread_limb(ctx, &gate, limb)?;
             assigned_spread = gate.mul_add(
                 ctx,
                 QuantumCell::Existing(&spread_limb),
@@ -203,9 +205,8 @@ impl<F: PrimeField> SpreadConfig<F> {
         ctx: &mut Context<'v, F>,
         gate: &FlexGateConfig<F>,
         limb: &AssignedValue<F>,
-        limb_idx: usize,
     ) -> Result<AssignedValue<'a, F>, Error> {
-        let column_idx = limb_idx % self.num_advice_columns;
+        let column_idx = self.num_limb_sum % self.num_advice_columns;
         let assigned_dense_cell = ctx.region.assign_advice(
             || format!("dense at offset {}", self.row_offset),
             self.denses[column_idx],
@@ -231,6 +232,7 @@ impl<F: PrimeField> SpreadConfig<F> {
         let assigned_spread_value = gate.load_witness(ctx, spread_value);
         ctx.region
             .constrain_equal(assigned_spread_cell.cell(), assigned_spread_value.cell())?;
+        self.num_limb_sum += 1;
         if column_idx == self.num_advice_columns - 1 {
             self.row_offset += 1;
         }

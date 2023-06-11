@@ -21,10 +21,10 @@ use hex;
 use itertools::Itertools;
 use sha2::{Digest, Sha256};
 
-const BLOCK_BYTE: usize = 64;
-const DIGEST_BYTE: usize = 32;
+// const BLOCK_BYTE: usize = 64;
+// const DIGEST_BYTE: usize = 32;
 
-pub type SpreadU32<'a, F: PrimeField> = (AssignedValue<'a, F>, AssignedValue<'a, F>);
+pub type SpreadU32<'a, F> = (AssignedValue<'a, F>, AssignedValue<'a, F>);
 
 pub fn sha256_compression<'a, 'b: 'a, F: PrimeField>(
     ctx: &mut Context<'b, F>,
@@ -60,11 +60,15 @@ pub fn sha256_compression<'a, 'b: 'a, F: PrimeField>(
     //     .iter()
     //     .map(|val: &AssignedValue<F>| gate.num_to_bits(ctx, val, 32))
     //     .collect_vec();
+    let mut message_spreads = message_u32s
+        .iter()
+        .map(|dense| state_to_spread_u32(ctx, range, spread_config, dense))
+        .collect::<Result<Vec<SpreadU32<F>>, Error>>()?;
     for idx in 16..64 {
-        let w_2_spread = state_to_spread_u32(ctx, range, spread_config, &message_u32s[idx - 2])?;
-        let w_15_spread = state_to_spread_u32(ctx, range, spread_config, &message_u32s[idx - 15])?;
-        let term1 = sigma_lower1(ctx, range, spread_config, &w_2_spread)?;
-        let term3 = sigma_lower0(ctx, range, spread_config, &w_15_spread)?;
+        // let w_2_spread = state_to_spread_u32(ctx, range, spread_config, &message_u32s[idx - 2])?;
+        // let w_15_spread = state_to_spread_u32(ctx, range, spread_config, &message_u32s[idx - 15])?;
+        let term1 = sigma_lower1(ctx, range, spread_config, &message_spreads[idx - 2])?;
+        let term3 = sigma_lower0(ctx, range, spread_config, &message_spreads[idx - 15])?;
         // let term1_u32 = bits2u32(ctx, gate, &term1_bits);
         // let term3_u32 = bits2u32(ctx, gate, &term3_bits);
         let new_w = {
@@ -93,6 +97,8 @@ pub fn sha256_compression<'a, 'b: 'a, F: PrimeField>(
         //     new_w.value()
         // );
         message_u32s.push(new_w.clone());
+        let new_w_spread = state_to_spread_u32(ctx, range, spread_config, &new_w)?;
+        message_spreads.push(new_w_spread);
         // if idx <= 61 {
         //     let new_w_bits = gate.num_to_bits(ctx, &new_w, 32);
         //     message_bits.push(new_w_bits);
@@ -110,6 +116,14 @@ pub fn sha256_compression<'a, 'b: 'a, F: PrimeField>(
         pre_state_words[6].clone(),
         pre_state_words[7].clone(),
     );
+    let mut a_spread = state_to_spread_u32(ctx, range, spread_config, &a)?;
+    let mut b_spread = state_to_spread_u32(ctx, range, spread_config, &b)?;
+    let mut c_spread = state_to_spread_u32(ctx, range, spread_config, &c)?;
+    // let mut d_spread = state_to_spread_u32(ctx, range, spread_config, &d)?;
+    let mut e_spread = state_to_spread_u32(ctx, range, spread_config, &e)?;
+    let mut f_spread = state_to_spread_u32(ctx, range, spread_config, &f)?;
+    let mut g_spread = state_to_spread_u32(ctx, range, spread_config, &g)?;
+    // let mut h_spread = state_to_spread_u32(ctx, range, spread_config, &h)?;
     // let mut a_bits = gate.num_to_bits(ctx, &a, 32);
     // let mut b_bits = gate.num_to_bits(ctx, &b, 32);
     // let mut c_bits = gate.num_to_bits(ctx, &c, 32);
@@ -120,9 +134,9 @@ pub fn sha256_compression<'a, 'b: 'a, F: PrimeField>(
     let mut t2 = gate.load_zero(ctx);
     for idx in 0..64 {
         t1 = {
-            let e_spread = state_to_spread_u32(ctx, range, spread_config, &e)?;
-            let f_spread = state_to_spread_u32(ctx, range, spread_config, &f)?;
-            let g_spread = state_to_spread_u32(ctx, range, spread_config, &g)?;
+            // let e_spread = state_to_spread_u32(ctx, range, spread_config, &e)?;
+            // let f_spread = state_to_spread_u32(ctx, range, spread_config, &f)?;
+            // let g_spread = state_to_spread_u32(ctx, range, spread_config, &g)?;
             let sigma_term = sigma_upper1(ctx, range, spread_config, &e_spread)?;
             let ch_term = ch(ctx, range, spread_config, &e_spread, &f_spread, &g_spread)?;
             // println!(
@@ -154,9 +168,9 @@ pub fn sha256_compression<'a, 'b: 'a, F: PrimeField>(
             mod_u32(ctx, &range, &add4)
         };
         t2 = {
-            let a_spread = state_to_spread_u32(ctx, range, spread_config, &a)?;
-            let b_spread = state_to_spread_u32(ctx, range, spread_config, &b)?;
-            let c_spread = state_to_spread_u32(ctx, range, spread_config, &c)?;
+            // let a_spread = state_to_spread_u32(ctx, range, spread_config, &a)?;
+            // let b_spread = state_to_spread_u32(ctx, range, spread_config, &b)?;
+            // let c_spread = state_to_spread_u32(ctx, range, spread_config, &c)?;
             let sigma_term = sigma_upper0(ctx, range, spread_config, &a_spread)?;
             let maj_term = maj(ctx, range, spread_config, &a_spread, &b_spread, &c_spread)?;
             let add = gate.add(
@@ -168,19 +182,27 @@ pub fn sha256_compression<'a, 'b: 'a, F: PrimeField>(
         };
         // println!("idx {}, t1 {:?}, t2 {:?}", idx, t1.value(), t2.value());
         h = g;
+        // h_spread = g_spread;
         g = f;
+        g_spread = f_spread;
         f = e;
+        f_spread = e_spread;
         e = {
             let add = gate.add(ctx, QuantumCell::Existing(&d), QuantumCell::Existing(&t1));
             mod_u32(ctx, range, &add)
         };
+        e_spread = state_to_spread_u32(ctx, range, spread_config, &e)?;
         d = c;
+        // d_spread = c_spread;
         c = b;
+        c_spread = b_spread;
         b = a;
+        b_spread = a_spread;
         a = {
             let add = gate.add(ctx, QuantumCell::Existing(&t1), QuantumCell::Existing(&t2));
             mod_u32(ctx, range, &add)
         };
+        a_spread = state_to_spread_u32(ctx, range, spread_config, &a)?;
     }
     let new_states = vec![a, b, c, d, e, f, g, h];
     let next_state_words = new_states
