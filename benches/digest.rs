@@ -53,16 +53,18 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use halo2_base::{gates::range::RangeStrategy::Vertical, SKIP_FIRST_PASS};
 use halo2_dynamic_sha256::Sha256DynamicConfig;
 
-const K: u32 = 11;
+const K: u32 = 17;
 
 fn bench(name: &str, k: u32, c: &mut Criterion) {
+    let mut group = c.benchmark_group("SHA256: 128 bytes input * 2");
+    group.sample_size(10);
     #[derive(Debug, Clone)]
-    struct BenchCircuit<F: Field> {
-        test_input: Vec<u8>,
+    struct BenchCircuit<F: PrimeField> {
+        test_inputs: Vec<Vec<u8>>,
         _f: PhantomData<F>,
     }
 
-    impl<F: Field> Circuit<F> for BenchCircuit<F> {
+    impl<F: PrimeField> Circuit<F> for BenchCircuit<F> {
         type Config = Sha256DynamicConfig<F>;
         type FloorPlanner = SimpleFloorPlanner;
 
@@ -71,7 +73,6 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
         }
 
         fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
-            let sha256_bit_configs = vec![Sha256CompressionConfig::configure(meta)];
             let range_config = RangeConfig::configure(
                 meta,
                 Vertical,
@@ -80,12 +81,15 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
                 Self::NUM_FIXED,
                 Self::LOOKUP_BITS,
                 0,
-                K as usize,
+                17,
             );
-            let sha256 = Sha256DynamicConfig::construct(
-                sha256_bit_configs,
-                vec![Self::MAX_BYTE_SIZE],
+            let sha256: Sha256DynamicConfig<F> = Sha256DynamicConfig::configure(
+                meta,
+                vec![Self::MAX_BYTE_SIZE1, Self::MAX_BYTE_SIZE2],
                 range_config,
+                8,
+                2,
+                true,
             );
             sha256
         }
@@ -95,12 +99,14 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
             config: Self::Config,
             mut layouter: impl Layouter<F>,
         ) -> Result<(), Error> {
-            let mut sha256 = config;
+            let mut sha256 = config.clone();
             let range = sha256.range().clone();
-            range.load_lookup_table(&mut layouter)?;
+            sha256.range().load_lookup_table(&mut layouter)?;
+            sha256.load(&mut layouter)?;
             let mut first_pass = SKIP_FIRST_PASS;
+            // let mut assigned_hash_cells = vec![];
             layouter.assign_region(
-                || "random rsa modpow test with 2048 bits public keys",
+                || "dynamic sha2 test",
                 |region| {
                     if first_pass {
                         first_pass = false;
@@ -108,14 +114,8 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
                     }
 
                     let ctx = &mut sha256.new_context(region);
-                    let _ = sha256.digest(ctx, &self.test_input)?;
+                    let result0 = sha256.digest(ctx, &self.test_inputs[0])?;
                     range.finalize(ctx);
-                    {
-                        println!("total advice cells: {}", ctx.total_advice);
-                        let const_rows = ctx.total_fixed + 1;
-                        println!("maximum rows used by a fixed column: {const_rows}");
-                        println!("lookup cells used: {}", ctx.cells_to_lookup.len());
-                    }
                     Ok(())
                 },
             )?;
@@ -123,12 +123,13 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
         }
     }
 
-    impl<F: Field> BenchCircuit<F> {
-        const MAX_BYTE_SIZE: usize = 1024;
-        const NUM_ADVICE: usize = 50;
+    impl<F: PrimeField> BenchCircuit<F> {
+        const MAX_BYTE_SIZE1: usize = 128;
+        const MAX_BYTE_SIZE2: usize = 128;
+        const NUM_ADVICE: usize = 3;
         const NUM_FIXED: usize = 1;
         const NUM_LOOKUP_ADVICE: usize = 1;
-        const LOOKUP_BITS: usize = 8;
+        const LOOKUP_BITS: usize = 16;
     }
 
     // Initialize the polynomial commitment parameters
@@ -149,14 +150,9 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
     let params: ParamsKZG<Bn256> =
         ParamsKZG::read::<_>(&mut BufReader::new(params_fs)).expect("Failed to read params");
 
-    let test_input = vec![0; 60];
-    // let output = Sha256::digest(&test_input);
-    // let output = output
-    //     .into_iter()
-    //     .map(|byte| Fr::from(byte as u64))
-    //     .collect::<Vec<Fr>>();
+    let test_inputs = vec![vec![0x1; 56], vec![0u8, 0u8, 0u8]];
     let circuit = BenchCircuit {
-        test_input: test_input.clone(),
+        test_inputs,
         _f: PhantomData,
     };
 
@@ -165,10 +161,10 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
     let pk = keygen_pk(&params, vk, &circuit).expect("keygen_pk should not fail");
 
     let prover_name = name.to_string() + "-prover";
-    let verifier_name = name.to_string() + "-verifier";
+    // let verifier_name = name.to_string() + "-verifier";
 
     // Benchmark proof creation
-    c.bench_function(&prover_name, |b| {
+    group.bench_function(&prover_name, |b| {
         b.iter(|| {
             let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
             create_proof::<KZGCommitmentScheme<_>, ProverGWC<_>, _, _, _, _>(
