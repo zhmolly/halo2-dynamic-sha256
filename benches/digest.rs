@@ -124,9 +124,9 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
     }
 
     impl<F: PrimeField> BenchCircuit<F> {
-        const MAX_BYTE_SIZE1: usize = 128;
-        const MAX_BYTE_SIZE2: usize = 128;
-        const NUM_ADVICE: usize = 3;
+        const MAX_BYTE_SIZE1: usize = 1024;
+        const MAX_BYTE_SIZE2: usize = 1024;
+        const NUM_ADVICE: usize = 9;
         const NUM_FIXED: usize = 1;
         const NUM_LOOKUP_ADVICE: usize = 1;
         const LOOKUP_BITS: usize = 16;
