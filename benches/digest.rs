@@ -114,7 +114,7 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
                     }
 
                     let ctx = &mut sha256.new_context(region);
-                    let result0 = sha256.digest(ctx, &self.test_inputs[0])?;
+                    let result0 = sha256.digest(ctx, &self.test_inputs[0], None)?;
                     range.finalize(ctx);
                     Ok(())
                 },
