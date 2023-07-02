@@ -89,16 +89,17 @@ impl<F: PrimeField> Sha256DynamicConfig<F> {
             input_byte_size_with_9 / one_round_size + 1
         };
         let padded_size = one_round_size * num_round;
-        let max_byte_size = self.max_variable_byte_sizes[self.cur_hash_idx];
-        let max_round = max_byte_size / one_round_size;
+        let max_variable_byte_size = self.max_variable_byte_sizes[self.cur_hash_idx];
+        let max_variable_round = max_variable_byte_size / one_round_size;
         let precomputed_input_len = precomputed_input_len.unwrap_or(0);
         assert_eq!(precomputed_input_len % one_round_size, 0);
-        assert!(padded_size - precomputed_input_len <= max_byte_size);
+        assert!(padded_size - precomputed_input_len <= max_variable_byte_size);
         let zero_padding_byte_size = padded_size - input_byte_size_with_9;
-        let remaining_byte_size = max_byte_size - padded_size;
+        let remaining_byte_size = max_variable_byte_size + precomputed_input_len - padded_size;
+        let precomputed_round = precomputed_input_len / one_round_size;
         assert_eq!(
             remaining_byte_size,
-            one_round_size * (max_round - num_round)
+            one_round_size * (max_variable_round + precomputed_round - num_round)
         );
         let mut padded_inputs = input.to_vec();
         padded_inputs.push(0x80);
@@ -116,7 +117,10 @@ impl<F: PrimeField> Sha256DynamicConfig<F> {
         for _ in 0..remaining_byte_size {
             padded_inputs.push(0);
         }
-        assert_eq!(padded_inputs.len(), max_byte_size);
+        assert_eq!(
+            padded_inputs.len(),
+            max_variable_byte_size + precomputed_input_len
+        );
         // for (idx, byte) in padded_inputs.iter().enumerate() {
         //     println!("idx {} byte {}", idx, byte);
         // }
@@ -144,10 +148,8 @@ impl<F: PrimeField> Sha256DynamicConfig<F> {
         let padding_is_less_than_round =
             range.is_less_than_safe(ctx, &padding_size, one_round_size as u64);
         gate.assert_is_const(ctx, &padding_is_less_than_round, F::one());
-        let assigned_precomputed_round = gate.load_witness(
-            ctx,
-            Value::known(F::from((precomputed_input_len / one_round_size) as u64)),
-        );
+        let assigned_precomputed_round =
+            gate.load_witness(ctx, Value::known(F::from(precomputed_round as u64)));
         let assigned_target_round = gate.sub(
             ctx,
             QuantumCell::Existing(&assigned_num_round),
@@ -181,7 +183,7 @@ impl<F: PrimeField> Sha256DynamicConfig<F> {
             }
         }
         let mut num_processed_input = 0;
-        while num_processed_input < (max_byte_size - precomputed_input_len) {
+        while num_processed_input < max_variable_byte_size {
             let assigned_input_word_at_round =
                 &assigned_input_bytes[num_processed_input..(num_processed_input + one_round_size)];
             let new_assigned_hs_out = sha256_compression(
@@ -595,12 +597,12 @@ mod test {
             let mut rng = thread_rng();
             (0..len).map(|_| rng.gen::<u8>()).collect()
         }
-        let test_inputs = vec![gen_random_bytes(96), gen_random_bytes(96)];
+        let test_inputs = vec![gen_random_bytes(128 + 64), gen_random_bytes(128 + 64)];
         let test_output0 = Sha256::digest(&test_inputs[0]);
         let test_output1 = Sha256::digest(&test_inputs[1]);
         let circuit = TestCircuit::<Fr> {
             test_inputs,
-            precomputed_input_lens: vec![64, 64],
+            precomputed_input_lens: vec![128, 128],
             _f: PhantomData,
         };
         let test_output = vec![test_output0, test_output1]
