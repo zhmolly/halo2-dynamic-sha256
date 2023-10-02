@@ -42,6 +42,18 @@ impl<F: ScalarField> ShaThreadBuilder<F> {
         }
     }
 
+    pub fn mock() -> Self {
+        Self::new(false)
+    }
+
+    pub fn keygen() -> Self {
+        Self::new(false).unknown(true)
+    }
+
+    pub fn prover() -> Self {
+        Self::new(true)
+    }
+
     pub fn from_stage(stage: CircuitBuilderStage) -> Self {
         Self::new(stage == CircuitBuilderStage::Prover)
             .unknown(stage == CircuitBuilderStage::Keygen)
