@@ -1,48 +1,41 @@
 use std::marker::PhantomData;
 
-use crate::{utils::*, SpreadU32};
-use halo2_base::halo2_proofs::halo2curves::FieldExt;
 use halo2_base::halo2_proofs::{
-    circuit::{AssignedCell, Cell, Layouter, Region, SimpleFloorPlanner, Value},
-    plonk::{
-        Advice, Circuit, Column, ConstraintSystem, Error, Expression, Fixed, Selector, TableColumn,
-        VirtualCells,
-    },
+    circuit::{Layouter, Region, Value},
+    plonk::{Advice, Column, ConstraintSystem, Error, TableColumn},
     poly::Rotation,
 };
-use halo2_base::utils::decompose;
-use halo2_base::ContextParams;
+use halo2_base::safe_types::RangeChip;
+use halo2_base::utils::{decompose, ScalarField};
 use halo2_base::QuantumCell;
 use halo2_base::{
-    gates::{flex_gate::FlexGateConfig, range::RangeConfig, GateInstructions, RangeInstructions},
-    utils::{bigint_to_fe, biguint_to_fe, fe_to_biguint, modulus, PrimeField},
+    gates::{GateInstructions, RangeInstructions},
     AssignedValue, Context,
 };
-use hex;
 use itertools::Itertools;
-use num_bigint::BigUint;
+
+use crate::gate::ShaThreadBuilder;
+use crate::utils::{bits_le_to_fe, fe_to_bits_le};
 
 #[derive(Debug, Clone)]
-pub struct SpreadConfig<F: PrimeField> {
-    denses: Vec<Column<Advice>>,
-    spreads: Vec<Column<Advice>>,
-    table_dense: TableColumn,
-    table_spread: TableColumn,
-    num_bits_lookup: usize,
-    num_advice_columns: usize,
-    num_limb_sum: usize,
-    row_offset: usize,
+pub struct SpreadConfig<F: ScalarField> {
+    pub denses: Vec<Column<Advice>>,
+    pub spreads: Vec<Column<Advice>>,
+    pub table_dense: TableColumn,
+    pub table_spread: TableColumn,
+    pub num_advice_columns: usize,
+    pub num_bits_lookup: usize,
     _f: PhantomData<F>,
 }
 
-impl<F: PrimeField> SpreadConfig<F> {
+impl<F: ScalarField> SpreadConfig<F> {
     pub fn configure(
         meta: &mut ConstraintSystem<F>,
         num_bits_lookup: usize,
         num_advice_columns: usize,
     ) -> Self {
         debug_assert_eq!(16 % num_bits_lookup, 0);
-        // debug_assert_eq!(16 % (num_bits_lookup * num_advice_columns), 0);
+
         let denses = (0..num_advice_columns)
             .map(|_| {
                 let column = meta.advice_column();
@@ -72,101 +65,10 @@ impl<F: PrimeField> SpreadConfig<F> {
             spreads,
             table_dense,
             table_spread,
-            num_bits_lookup,
             num_advice_columns,
-            num_limb_sum: 0,
-            row_offset: 0,
+            num_bits_lookup,
             _f: PhantomData,
         }
-    }
-
-    pub fn spread<'v: 'a, 'a>(
-        &mut self,
-        ctx: &mut Context<'v, F>,
-        range: &RangeConfig<F>,
-        dense: &AssignedValue<F>,
-    ) -> Result<AssignedValue<'a, F>, Error> {
-        let gate = range.gate();
-        let limb_bits = self.num_bits_lookup;
-        let num_limbs = 16 / limb_bits;
-        let limbs = dense.value().map(|v| decompose(v, num_limbs, limb_bits));
-        let assigned_limbs = (0..num_limbs)
-            .map(|idx| gate.load_witness(ctx, limbs.as_ref().map(|vec| vec[idx])))
-            .collect_vec();
-        {
-            let mut limbs_sum = gate.load_zero(ctx);
-            for (idx, limb) in assigned_limbs.iter().enumerate() {
-                limbs_sum = gate.mul_add(
-                    ctx,
-                    QuantumCell::Existing(&limb),
-                    QuantumCell::Constant(F::from(1 << (limb_bits * idx))),
-                    QuantumCell::Existing(&limbs_sum),
-                );
-            }
-            // println!(
-            //     "limbs_sum {:?} dense {:?}",
-            //     limbs_sum.value(),
-            //     dense.value()
-            // );
-            gate.assert_equal(
-                ctx,
-                QuantumCell::Existing(&limbs_sum),
-                QuantumCell::Existing(&dense),
-            );
-        }
-        let mut assigned_spread = gate.load_zero(ctx);
-        // println!("dense: {:?}", dense.value());
-        for (idx, limb) in assigned_limbs.iter().enumerate() {
-            // println!("idx {}, limb {:?}", idx, limb.value());
-            let spread_limb = self.spread_limb(ctx, &gate, limb)?;
-            assigned_spread = gate.mul_add(
-                ctx,
-                QuantumCell::Existing(&spread_limb),
-                QuantumCell::Constant(F::from(1 << (2 * limb_bits * idx))),
-                QuantumCell::Existing(&assigned_spread),
-            );
-        }
-        Ok(assigned_spread)
-    }
-
-    // pub fn dense<'v: 'a, 'a>(
-    //     &mut self,
-    //     ctx: &mut Context<'v, F>,
-    //     range: &RangeConfig<F>,
-    //     spread: &AssignedValue<F>,
-    // ) -> Result<AssignedValue<'a, F>, Error> {
-    //     ctx.region.assign_advice(
-    //         || format!("spread at offset {}", self.row_offset),
-    //         self.dense,
-    //         self.row_offset,
-    //         || limb.value,
-    //     )?;
-    // }
-
-    pub fn decompose_even_and_odd_unchecked<'v: 'a, 'a>(
-        &self,
-        ctx: &mut Context<'v, F>,
-        range: &RangeConfig<F>,
-        spread: &AssignedValue<F>,
-    ) -> Result<(AssignedValue<'a, F>, AssignedValue<'a, F>), Error> {
-        let bits_val = spread.value().map(|val| fe_to_bits_le(val, 32));
-        let even_bits_val = bits_val
-            .as_ref()
-            .map(|bits| (0..bits.len() / 2).map(|idx| bits[2 * idx]).collect_vec());
-        let odd_bits_val = bits_val.as_ref().map(|bits| {
-            (0..bits.len() / 2)
-                .map(|idx| bits[2 * idx + 1])
-                .collect_vec()
-        });
-        let (even_val, odd_val) = even_bits_val
-            .zip(odd_bits_val)
-            .map(|(even_bits, odd_bits)| (bits_le_to_fe(&even_bits), bits_le_to_fe(&odd_bits)))
-            .unzip();
-        let even_assigned = range.gate().load_witness(ctx, even_val);
-        let odd_assigned = range.gate().load_witness(ctx, odd_val);
-        range.range_check(ctx, &even_assigned, 16);
-        range.range_check(ctx, &odd_assigned, 16);
-        Ok((even_assigned, odd_assigned))
     }
 
     pub fn load(&self, layouter: &mut impl Layouter<F>) -> Result<(), Error> {
@@ -200,42 +102,108 @@ impl<F: PrimeField> SpreadConfig<F> {
         Ok(())
     }
 
-    fn spread_limb<'v: 'a, 'a>(
-        &mut self,
-        ctx: &mut Context<'v, F>,
-        gate: &FlexGateConfig<F>,
+    fn annotate_columns_in_region(&self, region: &mut Region<F>) {
+        for (i, &column) in self.spreads.iter().enumerate() {
+            region.name_column(|| format!("spread_{i}"), column);
+        }
+
+        for (i, &column) in self.denses.iter().enumerate() {
+            region.name_column(|| format!("dense_{i}"), column);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SpreadChip<'a, F: ScalarField> {
+    range: &'a RangeChip<F>,
+}
+
+impl<'a, F: ScalarField> SpreadChip<'a, F> {
+    pub fn new(range: &'a RangeChip<F>) -> Self {
+        debug_assert_eq!(16 % range.lookup_bits(), 0);
+
+        Self { range }
+    }
+    pub fn spread(
+        &self,
+        thread_pool: &mut ShaThreadBuilder<F>,
+        dense: &AssignedValue<F>,
+    ) -> Result<AssignedValue<F>, Error> {
+        let gate = self.range.gate();
+        let limb_bits = self.range.lookup_bits();
+        let num_limbs = 16 / limb_bits;
+        let limbs = decompose(dense.value(), num_limbs, limb_bits);
+        let assigned_limbs = thread_pool.main().assign_witnesses(limbs);
+        {
+            let mut limbs_sum = thread_pool.main().load_zero();
+            for (idx, limb) in assigned_limbs.iter().copied().enumerate() {
+                limbs_sum = gate.mul_add(
+                    thread_pool.main(),
+                    QuantumCell::Existing(limb),
+                    QuantumCell::Constant(F::from(1 << (limb_bits * idx))),
+                    QuantumCell::Existing(limbs_sum),
+                );
+            }
+            thread_pool.main().constrain_equal(&limbs_sum, dense);
+        }
+        let mut assigned_spread = thread_pool.main().load_zero();
+        for (idx, limb) in assigned_limbs.iter().enumerate() {
+            let spread_limb = self.spread_limb(thread_pool, limb)?;
+            assigned_spread = gate.mul_add(
+                thread_pool.main(),
+                QuantumCell::Existing(spread_limb),
+                QuantumCell::Constant(F::from(1 << (2 * limb_bits * idx))),
+                QuantumCell::Existing(assigned_spread),
+            );
+        }
+        Ok(assigned_spread)
+    }
+
+    pub fn decompose_even_and_odd_unchecked(
+        &self,
+        ctx: &mut Context<F>,
+        spread: &AssignedValue<F>,
+    ) -> Result<(AssignedValue<F>, AssignedValue<F>), Error> {
+        let bits = fe_to_bits_le(spread.value(), 32);
+        let even_bits = (0..bits.len() / 2).map(|idx| bits[2 * idx]).collect_vec();
+        let odd_bits = (0..bits.len() / 2)
+            .map(|idx| bits[2 * idx + 1])
+            .collect_vec();
+        let (even_val, odd_val) = (bits_le_to_fe(&even_bits), bits_le_to_fe(&odd_bits));
+        let even_assigned = ctx.load_witness(even_val);
+        let odd_assigned = ctx.load_witness(odd_val);
+        self.range.range_check(ctx, even_assigned, 16);
+        self.range.range_check(ctx, odd_assigned, 16);
+        Ok((even_assigned, odd_assigned))
+    }
+
+    fn spread_limb(
+        &self,
+        thread_pool: &mut ShaThreadBuilder<F>,
         limb: &AssignedValue<F>,
-    ) -> Result<AssignedValue<'a, F>, Error> {
-        let column_idx = self.num_limb_sum % self.num_advice_columns;
-        let assigned_dense_cell = ctx.region.assign_advice(
-            || format!("dense at offset {}", self.row_offset),
-            self.denses[column_idx],
-            self.row_offset,
-            || limb.value,
-        )?;
-        ctx.region
-            .constrain_equal(assigned_dense_cell.cell(), limb.cell())?;
-        let spread_value: Value<F> = limb.value().map(|val| {
-            let val_bits = fe_to_bits_le(val, 32);
+    ) -> Result<AssignedValue<F>, Error> {
+        let (ctx_base, (ctx_dense, ctx_spread)) = thread_pool.sha_contexts_pair();
+        let assigned_dense = ctx_dense.load_witness(*limb.value());
+        ctx_base.constrain_equal(&assigned_dense, limb);
+        let spread_value: F = {
+            let val_bits = fe_to_bits_le(limb.value(), 32);
             let mut spread_bits = vec![false; val_bits.len() * 2];
             for i in 0..val_bits.len() {
                 spread_bits[2 * i] = val_bits[i];
             }
             bits_le_to_fe(&spread_bits)
-        });
-        let assigned_spread_cell = ctx.region.assign_advice(
-            || format!("spread at offset {}", self.row_offset),
-            self.spreads[column_idx],
-            self.row_offset,
-            || spread_value,
-        )?;
-        let assigned_spread_value = gate.load_witness(ctx, spread_value);
-        ctx.region
-            .constrain_equal(assigned_spread_cell.cell(), assigned_spread_value.cell())?;
-        self.num_limb_sum += 1;
-        if column_idx == self.num_advice_columns - 1 {
-            self.row_offset += 1;
-        }
-        Ok(assigned_spread_value)
+        };
+
+        let assigned_spread = ctx_base.load_witness(spread_value);
+        let assigned_spread_vanila = ctx_spread.load_witness(*assigned_spread.value());
+        thread_pool
+            .main()
+            .constrain_equal(&assigned_spread_vanila, &assigned_spread);
+
+        Ok(assigned_spread)
+    }
+
+    pub fn range(&self) -> &RangeChip<F> {
+        self.range
     }
 }
