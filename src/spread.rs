@@ -1,26 +1,19 @@
 use std::marker::PhantomData;
 
-use crate::{utils::*, SpreadU32};
-use halo2_base::halo2_proofs::halo2curves::FieldExt;
+use crate::utils::*;
 use halo2_base::halo2_proofs::{
-    circuit::{AssignedCell, Cell, Layouter, Region, SimpleFloorPlanner, Value},
-    plonk::{
-        Advice, Circuit, Column, ConstraintSystem, Error, Expression, Fixed, Selector, TableColumn,
-        VirtualCells,
-    },
+    circuit::{Layouter, Value},
+    plonk::{Advice, Column, ConstraintSystem, Error, TableColumn},
     poly::Rotation,
 };
 use halo2_base::utils::decompose;
-use halo2_base::ContextParams;
 use halo2_base::QuantumCell;
 use halo2_base::{
     gates::{flex_gate::FlexGateConfig, range::RangeConfig, GateInstructions, RangeInstructions},
-    utils::{bigint_to_fe, biguint_to_fe, fe_to_biguint, modulus, PrimeField},
     AssignedValue, Context,
 };
-use hex;
+use halo2_ecc::fields::PrimeField;
 use itertools::Itertools;
-use num_bigint::BigUint;
 
 #[derive(Debug, Clone)]
 pub struct SpreadConfig<F: PrimeField> {
@@ -60,7 +53,7 @@ impl<F: PrimeField> SpreadConfig<F> {
 
         let table_dense = meta.lookup_table_column();
         let table_spread = meta.lookup_table_column();
-        for (idx, (dense, spread)) in denses.iter().zip(spreads.iter()).enumerate() {
+        for (_, (dense, spread)) in denses.iter().zip(spreads.iter()).enumerate() {
             meta.lookup("spread lookup", |meta| {
                 let dense = meta.query_advice(*dense, Rotation::cur());
                 let spread = meta.query_advice(*spread, Rotation::cur());
@@ -85,7 +78,7 @@ impl<F: PrimeField> SpreadConfig<F> {
         ctx: &mut Context<'v, F>,
         range: &RangeConfig<F>,
         dense: &AssignedValue<F>,
-    ) -> Result<AssignedValue<'a, F>, Error> {
+    ) -> Result<AssignedValue<F>, Error> {
         let gate = range.gate();
         let limb_bits = self.num_bits_lookup;
         let num_limbs = 16 / limb_bits;
@@ -98,9 +91,9 @@ impl<F: PrimeField> SpreadConfig<F> {
             for (idx, limb) in assigned_limbs.iter().enumerate() {
                 limbs_sum = gate.mul_add(
                     ctx,
-                    QuantumCell::Existing(&limb),
+                    QuantumCell::Existing(*limb),
                     QuantumCell::Constant(F::from(1 << (limb_bits * idx))),
-                    QuantumCell::Existing(&limbs_sum),
+                    QuantumCell::Existing(limbs_sum),
                 );
             }
             // println!(
@@ -110,8 +103,8 @@ impl<F: PrimeField> SpreadConfig<F> {
             // );
             gate.assert_equal(
                 ctx,
-                QuantumCell::Existing(&limbs_sum),
-                QuantumCell::Existing(&dense),
+                QuantumCell::Existing(limbs_sum),
+                QuantumCell::Existing(*dense),
             );
         }
         let mut assigned_spread = gate.load_zero(ctx);
@@ -121,9 +114,9 @@ impl<F: PrimeField> SpreadConfig<F> {
             let spread_limb = self.spread_limb(ctx, &gate, limb)?;
             assigned_spread = gate.mul_add(
                 ctx,
-                QuantumCell::Existing(&spread_limb),
+                QuantumCell::Existing(spread_limb),
                 QuantumCell::Constant(F::from(1 << (2 * limb_bits * idx))),
-                QuantumCell::Existing(&assigned_spread),
+                QuantumCell::Existing(assigned_spread),
             );
         }
         Ok(assigned_spread)
@@ -134,7 +127,7 @@ impl<F: PrimeField> SpreadConfig<F> {
     //     ctx: &mut Context<'v, F>,
     //     range: &RangeConfig<F>,
     //     spread: &AssignedValue<F>,
-    // ) -> Result<AssignedValue<'a, F>, Error> {
+    // ) -> Result<AssignedValue<F>, Error> {
     //     ctx.region.assign_advice(
     //         || format!("spread at offset {}", self.row_offset),
     //         self.dense,
@@ -148,7 +141,7 @@ impl<F: PrimeField> SpreadConfig<F> {
         ctx: &mut Context<'v, F>,
         range: &RangeConfig<F>,
         spread: &AssignedValue<F>,
-    ) -> Result<(AssignedValue<'a, F>, AssignedValue<'a, F>), Error> {
+    ) -> Result<(AssignedValue<F>, AssignedValue<F>), Error> {
         let bits_val = spread.value().map(|val| fe_to_bits_le(val, 32));
         let even_bits_val = bits_val
             .as_ref()
@@ -205,7 +198,7 @@ impl<F: PrimeField> SpreadConfig<F> {
         ctx: &mut Context<'v, F>,
         gate: &FlexGateConfig<F>,
         limb: &AssignedValue<F>,
-    ) -> Result<AssignedValue<'a, F>, Error> {
+    ) -> Result<AssignedValue<F>, Error> {
         let column_idx = self.num_limb_sum % self.num_advice_columns;
         let assigned_dense_cell = ctx.region.assign_advice(
             || format!("dense at offset {}", self.row_offset),

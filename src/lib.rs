@@ -10,24 +10,18 @@ pub use compression::*;
 
 use generic_array::GenericArray;
 use halo2_base::halo2_proofs::{
-    circuit::{AssignedCell, Cell, Layouter, Region, SimpleFloorPlanner, Value},
-    plonk::{
-        Advice, Circuit, Column, ConstraintSystem, Error, Expression, Fixed, Selector, TableColumn,
-        VirtualCells,
-    },
-    poly::Rotation,
+    circuit::{Layouter, Region, Value},
+    plonk::{ConstraintSystem, Error},
 };
-use halo2_base::utils::fe_to_bigint;
 use halo2_base::ContextParams;
 use halo2_base::QuantumCell;
 use halo2_base::{
-    gates::{flex_gate::FlexGateConfig, range::RangeConfig, GateInstructions, RangeInstructions},
-    utils::{bigint_to_fe, biguint_to_fe, fe_to_biguint, modulus, PrimeField},
+    gates::{range::RangeConfig, GateInstructions, RangeInstructions},
     AssignedValue, Context,
 };
-use hex;
+use halo2_ecc::fields::PrimeField;
 use itertools::Itertools;
-use sha2::{compress256, Digest, Sha256};
+use sha2::compress256;
 use spread::SpreadConfig;
 
 // const Sha256BitChipRowPerRound: usize = 72;
@@ -35,10 +29,10 @@ use spread::SpreadConfig;
 // const DIGEST_BYTE: usize = 32;
 
 #[derive(Debug, Clone)]
-pub struct AssignedHashResult<'a, F: PrimeField> {
-    pub input_len: AssignedValue<'a, F>,
-    pub input_bytes: Vec<AssignedValue<'a, F>>,
-    pub output_bytes: Vec<AssignedValue<'a, F>>,
+pub struct AssignedHashResult<F: PrimeField> {
+    pub input_len: AssignedValue<F>,
+    pub input_bytes: Vec<AssignedValue<F>>,
+    pub output_bytes: Vec<AssignedValue<F>>,
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +73,7 @@ impl<F: PrimeField> Sha256DynamicConfig<F> {
         ctx: &mut Context<'b, F>,
         input: &'a [u8],
         precomputed_input_len: Option<usize>,
-    ) -> Result<AssignedHashResult<'b, F>, Error> {
+    ) -> Result<AssignedHashResult<F>, Error> {
         let input_byte_size = input.len();
         let input_byte_size_with_9 = input_byte_size + 9;
         let one_round_size = Self::ONE_ROUND_INPUT_BYTES;
@@ -132,28 +126,28 @@ impl<F: PrimeField> Sha256DynamicConfig<F> {
         let assigned_num_round = gate.load_witness(ctx, Value::known(F::from(num_round as u64)));
         let assigned_padded_size = gate.mul(
             ctx,
-            QuantumCell::Existing(&assigned_num_round),
+            QuantumCell::Existing(assigned_num_round),
             QuantumCell::Constant(F::from(one_round_size as u64)),
         );
         let assigned_input_with_9_size = gate.add(
             ctx,
-            QuantumCell::Existing(&assigned_input_byte_size),
+            QuantumCell::Existing(assigned_input_byte_size),
             QuantumCell::Constant(F::from(9u64)),
         );
         let padding_size = gate.sub(
             ctx,
-            QuantumCell::Existing(&assigned_padded_size),
-            QuantumCell::Existing(&assigned_input_with_9_size),
+            QuantumCell::Existing(assigned_padded_size),
+            QuantumCell::Existing(assigned_input_with_9_size),
         );
         let padding_is_less_than_round =
-            range.is_less_than_safe(ctx, &padding_size, one_round_size as u64);
-        gate.assert_is_const(ctx, &padding_is_less_than_round, F::one());
+            range.is_less_than_safe(ctx, padding_size, one_round_size as u64);
+        gate.assert_is_const(ctx, &padding_is_less_than_round, F::ONE);
         let assigned_precomputed_round =
             gate.load_witness(ctx, Value::known(F::from(precomputed_round as u64)));
         let assigned_target_round = gate.sub(
             ctx,
-            QuantumCell::Existing(&assigned_num_round),
-            QuantumCell::Existing(&assigned_precomputed_round),
+            QuantumCell::Existing(assigned_num_round),
+            QuantumCell::Existing(assigned_precomputed_round),
         );
 
         // compute an initial state from the precomputed_input.
@@ -220,7 +214,7 @@ impl<F: PrimeField> Sha256DynamicConfig<F> {
             //             ctx,
             //             QuantumCell::Existing(assigned_byte),
             //             QuantumCell::Constant(F::from(1u64 << (8 * idx))),
-            //             QuantumCell::Existing(&sum),
+            //             QuantumCell::Existing(sum),
             //         );
             //     }
             //     ctx.region
@@ -274,7 +268,7 @@ impl<F: PrimeField> Sha256DynamicConfig<F> {
         //                     ctx,
         //                     QuantumCell::Existing(assigned_byte),
         //                     QuantumCell::Constant(F::from(1u64 << (8 * idx))),
-        //                     QuantumCell::Existing(&sum),
+        //                     QuantumCell::Existing(sum),
         //                 );
         //             }
         //             ctx.region
@@ -303,14 +297,14 @@ impl<F: PrimeField> Sha256DynamicConfig<F> {
             let selector = gate.is_equal(
                 ctx,
                 QuantumCell::Constant(F::from(n_round as u64)),
-                QuantumCell::Existing(&assigned_target_round),
+                QuantumCell::Existing(assigned_target_round),
             );
             for i in 0..8 {
                 output_h_out[i] = gate.select(
                     ctx,
-                    QuantumCell::Existing(&assigned_state[i]),
-                    QuantumCell::Existing(&output_h_out[i]),
-                    QuantumCell::Existing(&selector),
+                    QuantumCell::Existing(assigned_state[i]),
+                    QuantumCell::Existing(output_h_out[i]),
+                    QuantumCell::Existing(selector),
                 )
             }
         }
@@ -332,15 +326,15 @@ impl<F: PrimeField> Sha256DynamicConfig<F> {
                 for (idx, assigned_byte) in assigned_bytes.iter().enumerate() {
                     sum = gate.mul_add(
                         ctx,
-                        QuantumCell::Existing(assigned_byte),
+                        QuantumCell::Existing(*assigned_byte),
                         QuantumCell::Constant(F::from(1u64 << (24 - 8 * idx))),
-                        QuantumCell::Existing(&sum),
+                        QuantumCell::Existing(sum),
                     );
                 }
                 gate.assert_equal(
                     ctx,
-                    QuantumCell::Existing(&assigned_word),
-                    QuantumCell::Existing(&sum),
+                    QuantumCell::Existing(assigned_word),
+                    QuantumCell::Existing(sum),
                 );
                 assigned_bytes
             })
@@ -380,16 +374,15 @@ mod test {
 
     use super::*;
     use halo2_base::halo2_proofs::{
-        circuit::{Cell, Layouter, Region, SimpleFloorPlanner},
+        circuit::{Layouter, SimpleFloorPlanner},
         dev::MockProver,
         halo2curves::bn256::Fr,
-        plonk::{Circuit, ConstraintSystem, Instance},
+        plonk::{Circuit, Column, ConstraintSystem, Instance},
     };
-    use halo2_base::{gates::range::RangeStrategy::Vertical, ContextParams, SKIP_FIRST_PASS};
+    use halo2_base::{gates::range::RangeStrategy::Vertical, SKIP_FIRST_PASS};
 
-    use num_bigint::RandomBits;
-    use rand::rngs::OsRng;
     use rand::{thread_rng, Rng};
+    use sha2::{Digest, Sha256};
 
     #[derive(Debug, Clone)]
     struct TestConfig<F: PrimeField> {
@@ -474,6 +467,7 @@ mod test {
                     assigned_hash_cells
                         .append(&mut result1.output_bytes.into_iter().map(|v| v.cell()).collect());
                     range.finalize(ctx);
+                    #[cfg(feature = "display")]
                     {
                         println!("total advice cells: {}", ctx.total_advice);
                         let const_rows = ctx.total_fixed + 1;

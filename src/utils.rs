@@ -1,7 +1,5 @@
-use halo2_base::{
-    utils::PrimeField,
-    utils::{biguint_to_fe, fe_to_biguint},
-};
+use halo2_base::utils::{biguint_to_fe, fe_to_biguint};
+use halo2_ecc::fields::PrimeField;
 use itertools::*;
 use num_bigint::BigUint;
 

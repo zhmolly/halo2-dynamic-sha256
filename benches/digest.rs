@@ -1,44 +1,20 @@
+use halo2_base::gates::range::RangeConfig;
 use halo2_base::halo2_proofs::{
-    circuit::{AssignedCell, Cell, Layouter, Region, SimpleFloorPlanner, Value},
-    halo2curves::bn256::{Bn256, Fr},
-    plonk::{
-        create_proof,
-        keygen_pk,
-        keygen_vk,
-        Circuit,
-        ConstraintSystem,
-        Error,
-        // create_proof, keygen_pk, keygen_vk, Advice, Circuit, Column, ConstraintSystem, Error,
-        Expression,
-        Fixed,
-        Selector,
-        TableColumn,
-        VirtualCells,
-    },
+    circuit::{Layouter, SimpleFloorPlanner},
+    halo2curves::bn256::Bn256,
+    plonk::{create_proof, keygen_pk, keygen_vk, Circuit, ConstraintSystem, Error},
     poly::{
         commitment::{Params, ParamsProver},
         kzg::{
             commitment::{KZGCommitmentScheme, ParamsKZG},
             multiopen::ProverGWC,
         },
-        Rotation,
     },
-    transcript::{
-        Blake2bRead, Blake2bWrite, Challenge255, TranscriptReadBuffer, TranscriptWriterBuffer,
-    },
+    transcript::{Blake2bWrite, Challenge255, TranscriptWriterBuffer},
 };
-use halo2_base::utils::fe_to_bigint;
-use halo2_base::ContextParams;
-use halo2_base::QuantumCell;
-use halo2_base::{
-    gates::{flex_gate::FlexGateConfig, range::RangeConfig, GateInstructions, RangeInstructions},
-    utils::{bigint_to_fe, biguint_to_fe, fe_to_biguint, modulus, PrimeField},
-    AssignedValue, Context,
-};
-use sha2::{Digest, Sha256};
+use halo2_ecc::fields::PrimeField;
 
 use rand::rngs::OsRng;
-use rand::{thread_rng, Rng};
 
 use std::{
     fs::File,
@@ -114,7 +90,7 @@ fn bench(name: &str, k: u32, c: &mut Criterion) {
                     }
 
                     let ctx = &mut sha256.new_context(region);
-                    let result0 = sha256.digest(ctx, &self.test_inputs[0], None)?;
+                    let _ = sha256.digest(ctx, &self.test_inputs[0], None)?;
                     range.finalize(ctx);
                     Ok(())
                 },
